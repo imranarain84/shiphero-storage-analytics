@@ -17,8 +17,8 @@ st.set_page_config(
 
 @st.cache_data
 def load_loc_map():
-    csv_path = os.path.join(os.path.dirname(__file__), "..", "data",
-                            "ShipHero - Location Names and Info.csv")
+    csv_path = os.path.join(os.path.dirname(__file__), "data",
+                        "ShipHero - Location Names and Info.csv")
     df = pd.read_csv(csv_path)
     return dict(zip(df["Location"], df["Type"]))
 
