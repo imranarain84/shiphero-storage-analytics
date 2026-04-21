@@ -20,6 +20,7 @@ HEADERS    = {
     "Content-Type":  "application/json",
 }
 
+
 def _s3():
     return boto3.client(
         "s3",
@@ -29,10 +30,11 @@ def _s3():
         aws_secret_access_key = SPACES_SECRET,
     )
 
+
 def load_tracked_tags() -> set:
     try:
-        s3  = _s3()
-        obj = s3.get_object(Bucket=SPACES_BUCKET, Key="config/tracked_tags.json")
+        s3   = _s3()
+        obj  = s3.get_object(Bucket=SPACES_BUCKET, Key="config/tracked_tags.json")
         data = json.loads(obj["Body"].read())
         tags = set(data.get("tags", []))
         print(f"Loaded {len(tags)} tracked tags from Spaces")
@@ -41,14 +43,25 @@ def load_tracked_tags() -> set:
         print(f"WARNING: Could not load tracked_tags.json — {e}")
         return set()
 
-def _gql(query: str) -> dict:
-    resp = requests.post(
-        API_URL,
-        json    = {"query": query},
-        headers = HEADERS,
-        timeout = 60,
-    )
-    return resp.json()
+
+def _gql(query: str, retries: int = 3) -> dict:
+    for attempt in range(retries):
+        try:
+            resp = requests.post(
+                API_URL,
+                json    = {"query": query},
+                headers = HEADERS,
+                timeout = 120,
+            )
+            return resp.json()
+        except requests.exceptions.ReadTimeout:
+            print(f"    Request timed out — retry {attempt+1}/{retries}")
+            time.sleep(10)
+        except Exception as e:
+            print(f"    Request error: {e} — retry {attempt+1}/{retries}")
+            time.sleep(10)
+    return {}
+
 
 def fetch_matching_skus(tracked_tags: set) -> list[dict]:
     matching = []
@@ -58,19 +71,22 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
     while True:
         page_num += 1
         after = f', after: "{cursor}"' if cursor else ""
+
         query = f"""
         query {{
-          products(first: 100{after}) {{
-            edges {{
-              node {{
-                sku
-                name
-                tags
+          products {{
+            data(first: 100{after}) {{
+              edges {{
+                node {{
+                  sku
+                  name
+                  tags
+                }}
               }}
-            }}
-            pageInfo {{
-              hasNextPage
-              endCursor
+              pageInfo {{
+                hasNextPage
+                endCursor
+              }}
             }}
           }}
         }}
@@ -79,6 +95,12 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
         retries = 0
         while retries < 5:
             resp   = _gql(query)
+            if not resp:
+                print(f"  Page {page_num}: empty response — retry")
+                retries += 1
+                time.sleep(10)
+                continue
+
             errors = resp.get("errors", [])
             throttled = any(
                 "credit" in str(e).lower() or "complexity" in str(e).lower()
@@ -90,7 +112,12 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
                 retries += 1
                 continue
 
-            data = resp.get("data", {}).get("products", {})
+            data = (
+                resp.get("data", {})
+                    .get("products", {})
+                    .get("data", {})
+            )
+
             for edge in data.get("edges", []):
                 node      = edge["node"]
                 sku       = node.get("sku", "")
@@ -106,7 +133,7 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
 
             page = data.get("pageInfo", {})
             if not page.get("hasNextPage"):
-                print(f"  Pagination complete — {page_num} pages, "
+                print(f"  Pagination complete — {page_num} pages scanned, "
                       f"{len(matching)} matching SKUs")
                 return matching
 
@@ -116,6 +143,7 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
         time.sleep(0.2)
 
     return matching
+
 
 def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
     sku_list = [s["sku"] for s in skus]
@@ -146,6 +174,12 @@ def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
         retries = 0
         while retries < 5:
             resp   = _gql(query)
+            if not resp:
+                print(f"    Empty response — retry")
+                retries += 1
+                time.sleep(10)
+                continue
+
             errors = resp.get("errors", [])
             throttled = any(
                 "credit" in str(e).lower() or "complexity" in str(e).lower()
@@ -200,6 +234,7 @@ def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
 
     return rows
 
+
 def upload_snapshot(rows: list[dict], snapshot_date: str):
     payload  = json.dumps(rows, default=str).encode("utf-8")
     gz_bytes = gzip.compress(payload)
@@ -214,6 +249,7 @@ def upload_snapshot(rows: list[dict], snapshot_date: str):
         ContentEncoding = "gzip",
     )
     print(f"Uploaded {key} ({len(gz_bytes)/1024:.1f} KB, {len(rows):,} rows)")
+
 
 def main(args: dict = {}) -> dict:
     today = str(date.today())
@@ -243,6 +279,7 @@ def main(args: dict = {}) -> dict:
     )
     print(f"=== {summary} ===")
     return {"statusCode": 200, "body": summary}
+
 
 if __name__ == "__main__":
     main()
