@@ -18,7 +18,7 @@ st.set_page_config(
 @st.cache_data
 def load_loc_map():
     csv_path = os.path.join(os.path.dirname(__file__), "data",
-                        "ShipHero - Location Names and Info.csv")
+                            "ShipHero - Location Names and Info.csv")
     df = pd.read_csv(csv_path)
     return dict(zip(df["Location"], df["Type"]))
 
@@ -32,15 +32,21 @@ with st.sidebar:
     st.markdown("---")
 
     available_dates = list_available_dates()
+
     if available_dates:
-        min_date = date.fromisoformat(available_dates[0])
-        max_date = date.fromisoformat(available_dates[-1])
+        min_date      = date.fromisoformat(available_dates[0])
+        max_date      = date.fromisoformat(available_dates[-1])
+        default_start = max_date - timedelta(days=30)
+        if default_start < min_date:
+            default_start = min_date
     else:
-        min_date = max_date = date.today()
+        min_date      = date.today()
+        max_date      = date.today()
+        default_start = date.today()
 
     start_date = st.date_input(
         "Start Date",
-        value     = max_date - timedelta(days=30),
+        value     = default_start,
         min_value = min_date,
         max_value = max_date,
     )
