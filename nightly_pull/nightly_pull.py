@@ -6,7 +6,7 @@ import boto3
 import requests
 from datetime import date, datetime
 
-SHIPHERO_TOKEN  = os.environ["SHIPHERO_TOKEN"]
+SHIPHERO_REFRESH_TOKEN = os.environ["SHIPHERO_REFRESH_TOKEN"]
 SPACES_KEY      = os.environ["SPACES_KEY"]
 SPACES_SECRET   = os.environ["SPACES_SECRET"]
 SPACES_BUCKET   = os.environ["SPACES_BUCKET"]
@@ -15,10 +15,6 @@ SPACES_ENDPOINT = f"https://{SPACES_REGION}.digitaloceanspaces.com"
 
 BATCH_SIZE = 12
 API_URL    = "https://public-api.shiphero.com/graphql"
-HEADERS    = {
-    "Authorization": f"Bearer {SHIPHERO_TOKEN}",
-    "Content-Type":  "application/json",
-}
 
 
 def _s3():
@@ -29,6 +25,29 @@ def _s3():
         aws_access_key_id     = SPACES_KEY,
         aws_secret_access_key = SPACES_SECRET,
     )
+
+
+def get_fresh_token(refresh_token: str) -> str:
+    """
+    Exchange a refresh token for a fresh access token.
+    ShipHero uses Auth0 under the hood.
+    """
+    print("Refreshing ShipHero access token...")
+    resp = requests.post(
+        "https://login.shiphero.com/oauth/token",
+        json = {
+            "grant_type":    "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id":     "mtcbwqI2r613dGON3DbUaHLqQzQ4dkhn",
+        },
+        timeout = 30,
+    )
+    data = resp.json()
+    token = data.get("access_token")
+    if not token:
+        raise Exception(f"Failed to refresh token: {data}")
+    print("Token refreshed successfully")
+    return token
 
 
 def load_tracked_tags() -> set:
@@ -44,13 +63,13 @@ def load_tracked_tags() -> set:
         return set()
 
 
-def _gql(query: str, retries: int = 3) -> dict:
+def _gql(query: str, headers: dict, retries: int = 3) -> dict:
     for attempt in range(retries):
         try:
             resp = requests.post(
                 API_URL,
                 json    = {"query": query},
-                headers = HEADERS,
+                headers = headers,
                 timeout = 120,
             )
             return resp.json()
@@ -63,7 +82,7 @@ def _gql(query: str, retries: int = 3) -> dict:
     return {}
 
 
-def fetch_matching_skus(tracked_tags: set) -> list[dict]:
+def fetch_matching_skus(tracked_tags: set, headers: dict) -> list[dict]:
     matching = []
     cursor   = None
     page_num = 0
@@ -94,7 +113,7 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
 
         retries = 0
         while retries < 5:
-            resp   = _gql(query)
+            resp   = _gql(query, headers)
             if not resp:
                 print(f"  Page {page_num}: empty response — retry")
                 retries += 1
@@ -145,7 +164,7 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
     return matching
 
 
-def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
+def fetch_inventory_batched(skus: list[dict], headers: dict) -> list[dict]:
     sku_list = [s["sku"] for s in skus]
     sku_meta = {s["sku"]: s for s in skus}
     batches  = [sku_list[i:i+BATCH_SIZE] for i in range(0, len(sku_list), BATCH_SIZE)]
@@ -173,7 +192,7 @@ def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
 
         retries = 0
         while retries < 5:
-            resp   = _gql(query)
+            resp   = _gql(query, headers)
             if not resp:
                 print(f"    Empty response — retry")
                 retries += 1
@@ -255,19 +274,26 @@ def main(args: dict = {}) -> dict:
     today = str(date.today())
     print(f"=== Nightly Pull Starting: {today} ===")
 
+    # Get a fresh token every run — never expires
+    token   = get_fresh_token(SHIPHERO_REFRESH_TOKEN)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json",
+    }
+
     tracked_tags = load_tracked_tags()
     if not tracked_tags:
         return {"statusCode": 500, "body": "No tracked tags found — aborting"}
 
     print("Step 1: Scanning all products for tracked tags...")
-    matching_skus = fetch_matching_skus(tracked_tags)
+    matching_skus = fetch_matching_skus(tracked_tags, headers)
     print(f"Found {len(matching_skus):,} products with tracked tags")
 
     if not matching_skus:
         return {"statusCode": 200, "body": "No matching products found"}
 
     print("Step 2: Fetching inventory locations...")
-    rows = fetch_inventory_batched(matching_skus)
+    rows = fetch_inventory_batched(matching_skus, headers)
     print(f"Got {len(rows):,} inventory rows")
 
     print("Step 3: Uploading snapshot...")
