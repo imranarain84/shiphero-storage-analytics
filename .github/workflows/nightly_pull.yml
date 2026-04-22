@@ -2,20 +2,20 @@ name: Nightly ShipHero Pull
 
 on:
   schedule:
-    - cron: '0 7 * * *'  # 2am EST = 7am UTC
-  workflow_dispatch:       # allows manual trigger from GitHub
+    - cron: '0 23 * * *'  # 11pm EST
+  workflow_dispatch:
 
 jobs:
   pull:
     runs-on: ubuntu-latest
-    timeout-minutes: 180   # 3 hour max
+    timeout-minutes: 180
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
