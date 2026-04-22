@@ -1,0 +1,33 @@
+name: Nightly ShipHero Pull
+
+on:
+  schedule:
+    - cron: '0 7 * * *'  # 2am EST = 7am UTC
+  workflow_dispatch:       # allows manual trigger from GitHub
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180   # 3 hour max
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r nightly_pull/requirements.txt
+
+      - name: Run nightly pull
+        working-directory: nightly_pull
+        env:
+          SHIPHERO_TOKEN: ${{ secrets.SHIPHERO_TOKEN }}
+          SPACES_KEY: ${{ secrets.SPACES_KEY }}
+          SPACES_SECRET: ${{ secrets.SPACES_SECRET }}
+          SPACES_BUCKET: ${{ secrets.SPACES_BUCKET }}
+          SPACES_REGION: ${{ secrets.SPACES_REGION }}
+        run: python nightly_pull.py
