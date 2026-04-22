@@ -11,6 +11,7 @@ from logic.calculator import calculate_costs
 
 st.set_page_config(
     page_title = "Warehouse Storage Cost Report",
+    page_icon  = "streamlit_app/assets/VP Warehouse Icon TP.png",
     layout     = "wide",
     initial_sidebar_state = "expanded",
 )
@@ -25,7 +26,8 @@ def load_loc_map():
 loc_type_map = load_loc_map()
 
 with st.sidebar:
-    logo_path = os.path.join(os.path.dirname(__file__), "assets", "vertical_passage_logo.png")
+    logo_path = os.path.join(os.path.dirname(__file__), "assets",
+                             "VP Logo Horizontal Transparent White Lettering.png")
     if os.path.exists(logo_path):
         st.image(logo_path, use_column_width=True)
 
@@ -60,22 +62,23 @@ with st.sidebar:
     st.markdown("---")
     st.caption("🔒 [Admin Panel](/Admin)")
 
+# ── Header ────────────────────────────────────────────────────────────────────
 _, col_center, _ = st.columns([1, 2, 1])
 with col_center:
     st.markdown(
-        "<h1 style='text-align:center; margin-bottom:0;'>Warehouse Storage Cost Report</h1>",
+        "<h1 style='text-align:center; margin-bottom:4px;'>Warehouse Storage Cost Report</h1>",
         unsafe_allow_html=True,
     )
-    logo_sc = os.path.join(os.path.dirname(__file__), "assets", "snow_commerce_logo.png")
-    if os.path.exists(logo_sc):
-        st.image(logo_sc, use_column_width=True)
+    snow_logo = os.path.join(os.path.dirname(__file__), "assets", "snow-logo.png")
+    if os.path.exists(snow_logo):
+        st.image(snow_logo, use_column_width=True)
 
 st.markdown("---")
 
 if not available_dates:
     st.warning(
         "No inventory snapshots found yet. "
-        "The nightly pull runs at 2am — check back after the first run."
+        "The nightly pull runs at 11pm — check back after the first run."
     )
     st.stop()
 
