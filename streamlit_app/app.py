@@ -11,10 +11,18 @@ from logic.calculator import calculate_costs
 
 st.set_page_config(
     page_title = "Warehouse Storage Cost Report",
-    page_icon  = "streamlit_app/assets/VP Warehouse Icon TP.png",
+    page_icon  = os.path.join(os.path.dirname(__file__), "assets", "VP Warehouse Icon TP.png"),
     layout     = "wide",
     initial_sidebar_state = "expanded",
 )
+
+# Hide image toolbar (expand/open buttons on images)
+st.markdown("""
+    <style>
+    [data-testid="stImage"] button { display: none !important; }
+    [data-testid="stImageToolbar"] { display: none !important; }
+    </style>
+""", unsafe_allow_html=True)
 
 @st.cache_data
 def load_loc_map():
@@ -25,11 +33,12 @@ def load_loc_map():
 
 loc_type_map = load_loc_map()
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     logo_path = os.path.join(os.path.dirname(__file__), "assets",
                              "VP Logo Horizontal Transparent White Lettering.png")
     if os.path.exists(logo_path):
-        st.image(logo_path, use_column_width=True)
+        st.image(logo_path, width=200)
 
     st.markdown("---")
 
@@ -63,15 +72,16 @@ with st.sidebar:
     st.caption("🔒 [Admin Panel](/Admin)")
 
 # ── Header ────────────────────────────────────────────────────────────────────
+vp_logo = os.path.join(os.path.dirname(__file__), "assets",
+                       "VP Logo Horizontal Transparent White Lettering.png")
 _, col_center, _ = st.columns([1, 2, 1])
 with col_center:
+    if os.path.exists(vp_logo):
+        st.image(vp_logo, width=300)
     st.markdown(
-        "<h1 style='text-align:center; margin-bottom:4px;'>Warehouse Storage Cost Report</h1>",
+        "<h1 style='text-align:center; margin-top:8px; margin-bottom:4px;'>Warehouse Storage Cost Report</h1>",
         unsafe_allow_html=True,
     )
-    snow_logo = os.path.join(os.path.dirname(__file__), "assets", "snow-logo.png")
-    if os.path.exists(snow_logo):
-        st.image(snow_logo, use_column_width=True)
 
 st.markdown("---")
 
