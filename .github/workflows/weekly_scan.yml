@@ -8,7 +8,7 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 350
 
     steps:
       - name: Checkout code
@@ -32,3 +32,15 @@ jobs:
           SPACES_REGION: ${{ secrets.SPACES_REGION }}
           PULL_MODE: weekly
         run: python nightly_pull.py
+
+      - name: Auto re-trigger if scan incomplete
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/needs_resume ]; then
+            echo "Scan incomplete — triggering next run..."
+            gh workflow run weekly_scan.yml --repo imranarain84/shiphero-storage-analytics
+          else
+            echo "Scan complete — no re-trigger needed"
+          fi
