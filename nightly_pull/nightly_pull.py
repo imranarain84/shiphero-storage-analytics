@@ -233,16 +233,17 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
         if batch_idx % 50 == 0:
             print(f"  Inventory batch {batch_idx+1}/{total}")
 
-        # Try warehouse_products directly on product.data
         aliases = "\n".join([
             f"""
             s{i}: product(sku: "{sku}") {{
               data {{
                 sku
                 warehouse_products {{
-                  warehouse_id
-                  location_name
                   on_hand
+                  locations {{
+                    location
+                    quantity
+                  }}
                 }}
               }}
             }}
@@ -281,8 +282,7 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                 idx_in_batch = int(key[1:])
                 sku          = batch[idx_in_batch]
                 meta         = skus[sku]
-
-                product = (result or {}).get("data")
+                product      = (result or {}).get("data")
 
                 if not product:
                     rows.append({
@@ -307,16 +307,18 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                 else:
                     has_stock = False
                     for wp in wp_list:
-                        qty = wp.get("on_hand", 0) or 0
-                        if qty > 0:
-                            has_stock = True
-                            rows.append({
-                                "sku":           sku,
-                                "product_name":  meta["name"],
-                                "tags":          meta["tags"],
-                                "location_name": wp.get("location_name"),
-                                "quantity":      qty,
-                            })
+                        locations = wp.get("locations") or []
+                        for loc in locations:
+                            qty = loc.get("quantity", 0) or 0
+                            if qty > 0:
+                                has_stock = True
+                                rows.append({
+                                    "sku":           sku,
+                                    "product_name":  meta["name"],
+                                    "tags":          meta["tags"],
+                                    "location_name": loc.get("location"),
+                                    "quantity":      qty,
+                                })
                     if not has_stock:
                         rows.append({
                             "sku":           sku,
