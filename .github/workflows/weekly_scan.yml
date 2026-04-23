@@ -1,0 +1,34 @@
+name: Weekly SKU Discovery Scan
+
+on:
+  schedule:
+    - cron: '0 8 * * 0'  # 3am EST Sunday
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r nightly_pull/requirements.txt
+
+      - name: Run weekly SKU scan
+        working-directory: nightly_pull
+        env:
+          SHIPHERO_TOKEN: ${{ secrets.SHIPHERO_TOKEN }}
+          SPACES_KEY: ${{ secrets.SPACES_KEY }}
+          SPACES_SECRET: ${{ secrets.SPACES_SECRET }}
+          SPACES_BUCKET: ${{ secrets.SPACES_BUCKET }}
+          SPACES_REGION: ${{ secrets.SPACES_REGION }}
+          PULL_MODE: weekly
+        run: python nightly_pull.py
