@@ -22,6 +22,8 @@ HEADERS         = {
 
 KNOWN_SKUS_KEY  = "config/known_skus.json"
 CHECKPOINT_KEY  = "config/sku_scan_checkpoint.json"
+SCAN_START      = datetime.utcnow()
+MAX_MINUTES     = 340
 
 
 # ── Spaces client ─────────────────────────────────────────────────────────────
@@ -52,6 +54,11 @@ def _s3_put(key: str, data: dict):
     )
 
 
+def _approaching_limit() -> bool:
+    elapsed = (datetime.utcnow() - SCAN_START).total_seconds() / 60
+    return elapsed > MAX_MINUTES
+
+
 # ── GraphQL helper ────────────────────────────────────────────────────────────
 def _gql(query: str, retries: int = 3) -> dict:
     for attempt in range(retries):
@@ -72,7 +79,7 @@ def _gql(query: str, retries: int = 3) -> dict:
     return {}
 
 
-# ── Load config ───────────────────────────────────────────────────────────────
+# ── Config helpers ────────────────────────────────────────────────────────────
 def load_tracked_tags() -> set:
     data = _s3_get("config/tracked_tags.json")
     tags = set(data.get("tags", []))
@@ -81,7 +88,6 @@ def load_tracked_tags() -> set:
 
 
 def load_known_skus() -> dict:
-    """Returns {sku: {name, tags}} for all previously discovered SKUs."""
     data = _s3_get(KNOWN_SKUS_KEY)
     skus = data.get("skus", {})
     print(f"Loaded {len(skus):,} known SKUs from Spaces")
@@ -103,31 +109,43 @@ def load_checkpoint() -> dict:
 
 def save_checkpoint(cursor: str, found: dict):
     _s3_put(CHECKPOINT_KEY, {
-        "cursor":     cursor,
-        "found":      found,
-        "saved_at":   datetime.utcnow().isoformat(),
+        "cursor":   cursor,
+        "found":    found,
+        "saved_at": datetime.utcnow().isoformat(),
     })
+    print(f"  Checkpoint saved — {len(found):,} matches, cursor: {cursor[:20]}...")
 
 
 def clear_checkpoint():
     try:
         _s3().delete_object(Bucket=SPACES_BUCKET, Key=CHECKPOINT_KEY)
+        print("  Checkpoint cleared")
     except Exception:
         pass
 
 
-# ── Phase 1: Weekly SKU Discovery (with checkpoint/resume) ───────────────────
-def weekly_sku_scan(tracked_tags: set) -> dict:
-    """
-    Scans ALL products to find ones with tracked tags.
-    Saves progress every 50 pages so it can resume if interrupted.
-    Returns {sku: {name, tags}} dict.
-    """
-    # Check for existing checkpoint
-    checkpoint  = load_checkpoint()
-    cursor      = checkpoint.get("cursor")
-    found       = checkpoint.get("found", {})
-    page_num    = 0
+def flag_needs_resume():
+    with open("/tmp/needs_resume", "w") as f:
+        f.write("1")
+    print("  Flagged for auto re-trigger")
+
+
+# ── Partial snapshot ──────────────────────────────────────────────────────────
+def save_partial_snapshot(known_skus: dict):
+    if not known_skus:
+        return
+    print(f"Saving partial snapshot for {len(known_skus):,} known SKUs...")
+    rows = fetch_inventory_batched(known_skus, debug=False)
+    upload_snapshot(rows, str(date.today()))
+    print(f"Partial snapshot saved — {len(rows):,} rows")
+
+
+# ── Phase 1: Weekly SKU Discovery ────────────────────────────────────────────
+def weekly_sku_scan(tracked_tags: set) -> tuple[dict, bool]:
+    checkpoint = load_checkpoint()
+    cursor     = checkpoint.get("cursor")
+    found      = checkpoint.get("found", {})
+    page_num   = 0
 
     if cursor:
         print(f"  Resuming from checkpoint — {len(found):,} SKUs found so far")
@@ -135,6 +153,13 @@ def weekly_sku_scan(tracked_tags: set) -> dict:
         print("  Starting fresh scan...")
 
     while True:
+        if _approaching_limit():
+            print(f"  Approaching time limit at page {page_num} — saving checkpoint")
+            save_checkpoint(cursor or "", found)
+            save_partial_snapshot(found)
+            flag_needs_resume()
+            return found, False
+
         page_num += 1
         after = f', after: "{cursor}"' if cursor else ""
 
@@ -196,30 +221,25 @@ def weekly_sku_scan(tracked_tags: set) -> dict:
 
             page_info = data.get("pageInfo", {})
 
-            # Save checkpoint every 50 pages
             if page_num % 50 == 0:
-                print(f"  Page {page_num}: checkpoint saved — {len(found):,} matches so far")
+                print(f"  Page {page_num}: checkpoint — {len(found):,} matches so far")
                 save_checkpoint(page_info.get("endCursor", ""), found)
 
             if not page_info.get("hasNextPage"):
                 print(f"  Scan complete — {page_num} pages, {len(found):,} matching SKUs")
                 clear_checkpoint()
-                return found
+                return found, True
 
             cursor = page_info["endCursor"]
             break
 
         time.sleep(0.2)
 
-    return found
+    return found, False
 
 
 # ── Phase 2: Nightly Inventory Pull ──────────────────────────────────────────
-def fetch_inventory_batched(skus: dict) -> list[dict]:
-    """
-    Fetch inventory for known SKUs only.
-    Only includes rows where quantity > 0.
-    """
+def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
     sku_list = list(skus.keys())
     batches  = [sku_list[i:i+BATCH_SIZE] for i in range(0, len(sku_list), BATCH_SIZE)]
     rows     = []
@@ -248,6 +268,11 @@ def fetch_inventory_batched(skus: dict) -> list[dict]:
         retries = 0
         while retries < 5:
             resp = _gql(query)
+
+            # Debug first batch
+            if debug and batch_idx == 0:
+                print(f"DEBUG first batch response: {json.dumps(resp)[:1000]}")
+
             if not resp:
                 retries += 1
                 time.sleep(10)
@@ -263,6 +288,10 @@ def fetch_inventory_batched(skus: dict) -> list[dict]:
                 time.sleep(15)
                 retries += 1
                 continue
+
+            # Print any non-throttle errors
+            if errors and batch_idx == 0:
+                print(f"  Errors in first batch: {errors}")
 
             for key, product in (resp.get("data") or {}).items():
                 idx_in_batch = int(key[1:])
@@ -336,42 +365,37 @@ def upload_snapshot(rows: list[dict], snapshot_date: str):
 
 # ── Entry points ──────────────────────────────────────────────────────────────
 def run_weekly_scan(args: dict = {}) -> dict:
-    """
-    Weekly job: discover all SKUs with tracked tags.
-    Saves to known_skus.json. Supports checkpoint/resume.
-    """
     print(f"=== Weekly SKU Scan Starting: {date.today()} ===")
     tracked_tags = load_tracked_tags()
     if not tracked_tags:
         return {"statusCode": 500, "body": "No tracked tags"}
 
-    known_skus = weekly_sku_scan(tracked_tags)
-    save_known_skus(known_skus)
+    found, is_complete = weekly_sku_scan(tracked_tags)
 
-    # Also run inventory pull for today after scan completes
-    print("Running inventory pull for today...")
-    rows = fetch_inventory_batched(known_skus)
-    upload_snapshot(rows, str(date.today()))
+    if is_complete:
+        save_known_skus(found)
+        print("Running inventory pull for today...")
+        rows = fetch_inventory_batched(found, debug=True)
+        upload_snapshot(rows, str(date.today()))
+        summary = f"Weekly scan done — {len(found):,} SKUs, {len(rows):,} inventory rows"
+    else:
+        save_known_skus(found)
+        summary = f"Weekly scan paused — {len(found):,} SKUs found so far, will resume"
 
-    summary = f"Weekly scan done — {len(known_skus):,} SKUs, {len(rows):,} inventory rows"
     print(f"=== {summary} ===")
     return {"statusCode": 200, "body": summary}
 
 
 def run_nightly_pull(args: dict = {}) -> dict:
-    """
-    Nightly job: fetch inventory for known SKUs only.
-    Fast — skips the full product scan.
-    """
     print(f"=== Nightly Pull Starting: {date.today()} ===")
 
     known_skus = load_known_skus()
     if not known_skus:
-        print("No known SKUs found — running full scan instead")
+        print("No known SKUs — running full scan instead")
         return run_weekly_scan()
 
     print(f"Fetching inventory for {len(known_skus):,} known SKUs...")
-    rows = fetch_inventory_batched(known_skus)
+    rows = fetch_inventory_batched(known_skus, debug=True)
     print(f"Got {len(rows):,} inventory rows")
 
     upload_snapshot(rows, str(date.today()))
