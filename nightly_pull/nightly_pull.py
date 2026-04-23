@@ -233,17 +233,16 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
         if batch_idx % 50 == 0:
             print(f"  Inventory batch {batch_idx+1}/{total}")
 
-        # Fixed query — uses .data wrapper on product()
+        # Try warehouse_products directly on product.data
         aliases = "\n".join([
             f"""
             s{i}: product(sku: "{sku}") {{
               data {{
                 sku
-                inventory {{
-                  warehouse_products {{
-                    location
-                    on_hand
-                  }}
+                warehouse_products {{
+                  warehouse_id
+                  location_name
+                  on_hand
                 }}
               }}
             }}
@@ -283,7 +282,6 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                 sku          = batch[idx_in_batch]
                 meta         = skus[sku]
 
-                # Unwrap the .data layer
                 product = (result or {}).get("data")
 
                 if not product:
@@ -296,10 +294,7 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                     })
                     continue
 
-                wp_list = (
-                    product.get("inventory", {})
-                           .get("warehouse_products") or []
-                )
+                wp_list = product.get("warehouse_products") or []
 
                 if not wp_list:
                     rows.append({
@@ -319,7 +314,7 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                                 "sku":           sku,
                                 "product_name":  meta["name"],
                                 "tags":          meta["tags"],
-                                "location_name": wp.get("location"),
+                                "location_name": wp.get("location_name"),
                                 "quantity":      qty,
                             })
                     if not has_stock:
