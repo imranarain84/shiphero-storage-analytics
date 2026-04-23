@@ -241,8 +241,12 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                 warehouse_products {{
                   on_hand
                   locations {{
-                    location
-                    quantity
+                    edges {{
+                      node {{
+                        location
+                        quantity
+                      }}
+                    }}
                   }}
                 }}
               }}
@@ -307,16 +311,20 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                 else:
                     has_stock = False
                     for wp in wp_list:
-                        locations = wp.get("locations") or []
-                        for loc in locations:
-                            qty = loc.get("quantity", 0) or 0
+                        loc_edges = (
+                            wp.get("locations", {})
+                              .get("edges", [])
+                        )
+                        for edge in loc_edges:
+                            node = edge.get("node", {})
+                            qty  = node.get("quantity", 0) or 0
                             if qty > 0:
                                 has_stock = True
                                 rows.append({
                                     "sku":           sku,
                                     "product_name":  meta["name"],
                                     "tags":          meta["tags"],
-                                    "location_name": loc.get("location"),
+                                    "location_name": node.get("location"),
                                     "quantity":      qty,
                                 })
                     if not has_stock:
