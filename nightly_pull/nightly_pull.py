@@ -26,7 +26,6 @@ SCAN_START      = datetime.utcnow()
 MAX_MINUTES     = 340
 
 
-# ── Spaces client ─────────────────────────────────────────────────────────────
 def _s3():
     return boto3.client(
         "s3",
@@ -59,7 +58,6 @@ def _approaching_limit() -> bool:
     return elapsed > MAX_MINUTES
 
 
-# ── GraphQL helper ────────────────────────────────────────────────────────────
 def _gql(query: str, retries: int = 3) -> dict:
     for attempt in range(retries):
         try:
@@ -79,7 +77,6 @@ def _gql(query: str, retries: int = 3) -> dict:
     return {}
 
 
-# ── Config helpers ────────────────────────────────────────────────────────────
 def load_tracked_tags() -> set:
     data = _s3_get("config/tracked_tags.json")
     tags = set(data.get("tags", []))
@@ -130,17 +127,6 @@ def flag_needs_resume():
     print("  Flagged for auto re-trigger")
 
 
-# ── Partial snapshot ──────────────────────────────────────────────────────────
-def save_partial_snapshot(known_skus: dict):
-    if not known_skus:
-        return
-    print(f"Saving partial snapshot for {len(known_skus):,} known SKUs...")
-    rows = fetch_inventory_batched(known_skus, debug=False)
-    upload_snapshot(rows, str(date.today()))
-    print(f"Partial snapshot saved — {len(rows):,} rows")
-
-
-# ── Phase 1: Weekly SKU Discovery ────────────────────────────────────────────
 def weekly_sku_scan(tracked_tags: set) -> tuple[dict, bool]:
     checkpoint = load_checkpoint()
     cursor     = checkpoint.get("cursor")
@@ -156,7 +142,6 @@ def weekly_sku_scan(tracked_tags: set) -> tuple[dict, bool]:
         if _approaching_limit():
             print(f"  Approaching time limit at page {page_num} — saving checkpoint")
             save_checkpoint(cursor or "", found)
-            save_partial_snapshot(found)
             flag_needs_resume()
             return found, False
 
@@ -238,7 +223,6 @@ def weekly_sku_scan(tracked_tags: set) -> tuple[dict, bool]:
     return found, False
 
 
-# ── Phase 2: Nightly Inventory Pull ──────────────────────────────────────────
 def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
     sku_list = list(skus.keys())
     batches  = [sku_list[i:i+BATCH_SIZE] for i in range(0, len(sku_list), BATCH_SIZE)]
@@ -249,14 +233,17 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
         if batch_idx % 50 == 0:
             print(f"  Inventory batch {batch_idx+1}/{total}")
 
+        # Fixed query — uses .data wrapper on product()
         aliases = "\n".join([
             f"""
             s{i}: product(sku: "{sku}") {{
-              sku
-              inventory {{
-                warehouse_products {{
-                  location
-                  on_hand
+              data {{
+                sku
+                inventory {{
+                  warehouse_products {{
+                    location
+                    on_hand
+                  }}
                 }}
               }}
             }}
@@ -269,7 +256,6 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
         while retries < 5:
             resp = _gql(query)
 
-            # Debug first batch
             if debug and batch_idx == 0:
                 print(f"DEBUG first batch response: {json.dumps(resp)[:1000]}")
 
@@ -289,14 +275,16 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                 retries += 1
                 continue
 
-            # Print any non-throttle errors
             if errors and batch_idx == 0:
-                print(f"  Errors in first batch: {errors}")
+                print(f"  Errors in first batch: {errors[:2]}")
 
-            for key, product in (resp.get("data") or {}).items():
+            for key, result in (resp.get("data") or {}).items():
                 idx_in_batch = int(key[1:])
                 sku          = batch[idx_in_batch]
                 meta         = skus[sku]
+
+                # Unwrap the .data layer
+                product = (result or {}).get("data")
 
                 if not product:
                     rows.append({
@@ -363,7 +351,6 @@ def upload_snapshot(rows: list[dict], snapshot_date: str):
     print(f"Uploaded {key} ({len(gz_bytes)/1024:.1f} KB, {len(rows):,} rows)")
 
 
-# ── Entry points ──────────────────────────────────────────────────────────────
 def run_weekly_scan(args: dict = {}) -> dict:
     print(f"=== Weekly SKU Scan Starting: {date.today()} ===")
     tracked_tags = load_tracked_tags()
