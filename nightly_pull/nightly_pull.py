@@ -13,14 +13,18 @@ SPACES_BUCKET   = os.environ["SPACES_BUCKET"]
 SPACES_REGION   = os.environ.get("SPACES_REGION", "nyc3")
 SPACES_ENDPOINT = f"https://{SPACES_REGION}.digitaloceanspaces.com"
 
-BATCH_SIZE = 12
-API_URL    = "https://public-api.shiphero.com/graphql"
-HEADERS    = {
+BATCH_SIZE      = 12
+API_URL         = "https://public-api.shiphero.com/graphql"
+HEADERS         = {
     "Authorization": f"Bearer {SHIPHERO_TOKEN}",
     "Content-Type":  "application/json",
 }
 
+KNOWN_SKUS_KEY  = "config/known_skus.json"
+CHECKPOINT_KEY  = "config/sku_scan_checkpoint.json"
 
+
+# ── Spaces client ─────────────────────────────────────────────────────────────
 def _s3():
     return boto3.client(
         "s3",
@@ -31,19 +35,24 @@ def _s3():
     )
 
 
-def load_tracked_tags() -> set:
+def _s3_get(key: str) -> dict:
     try:
-        s3   = _s3()
-        obj  = s3.get_object(Bucket=SPACES_BUCKET, Key="config/tracked_tags.json")
-        data = json.loads(obj["Body"].read())
-        tags = set(data.get("tags", []))
-        print(f"Loaded {len(tags)} tracked tags from Spaces")
-        return tags
-    except Exception as e:
-        print(f"WARNING: Could not load tracked_tags.json — {e}")
-        return set()
+        obj = _s3().get_object(Bucket=SPACES_BUCKET, Key=key)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return {}
 
 
+def _s3_put(key: str, data: dict):
+    _s3().put_object(
+        Bucket      = SPACES_BUCKET,
+        Key         = key,
+        Body        = json.dumps(data, indent=2).encode("utf-8"),
+        ContentType = "application/json",
+    )
+
+
+# ── GraphQL helper ────────────────────────────────────────────────────────────
 def _gql(query: str, retries: int = 3) -> dict:
     for attempt in range(retries):
         try:
@@ -63,14 +72,67 @@ def _gql(query: str, retries: int = 3) -> dict:
     return {}
 
 
-def fetch_matching_skus(tracked_tags: set) -> list[dict]:
+# ── Load config ───────────────────────────────────────────────────────────────
+def load_tracked_tags() -> set:
+    data = _s3_get("config/tracked_tags.json")
+    tags = set(data.get("tags", []))
+    print(f"Loaded {len(tags)} tracked tags")
+    return tags
+
+
+def load_known_skus() -> dict:
+    """Returns {sku: {name, tags}} for all previously discovered SKUs."""
+    data = _s3_get(KNOWN_SKUS_KEY)
+    skus = data.get("skus", {})
+    print(f"Loaded {len(skus):,} known SKUs from Spaces")
+    return skus
+
+
+def save_known_skus(skus: dict):
+    _s3_put(KNOWN_SKUS_KEY, {
+        "skus":         skus,
+        "last_updated": datetime.utcnow().isoformat(),
+        "count":        len(skus),
+    })
+    print(f"Saved {len(skus):,} known SKUs to Spaces")
+
+
+def load_checkpoint() -> dict:
+    return _s3_get(CHECKPOINT_KEY)
+
+
+def save_checkpoint(cursor: str, found: dict):
+    _s3_put(CHECKPOINT_KEY, {
+        "cursor":     cursor,
+        "found":      found,
+        "saved_at":   datetime.utcnow().isoformat(),
+    })
+
+
+def clear_checkpoint():
+    try:
+        _s3().delete_object(Bucket=SPACES_BUCKET, Key=CHECKPOINT_KEY)
+    except Exception:
+        pass
+
+
+# ── Phase 1: Weekly SKU Discovery (with checkpoint/resume) ───────────────────
+def weekly_sku_scan(tracked_tags: set) -> dict:
     """
-    Paginate through all ShipHero products.
-    Keep only products that have at least one tracked tag.
+    Scans ALL products to find ones with tracked tags.
+    Saves progress every 50 pages so it can resume if interrupted.
+    Returns {sku: {name, tags}} dict.
     """
-    matching = []
-    cursor   = None
-    page_num = 0
+    # Check for existing checkpoint
+    checkpoint  = load_checkpoint()
+    cursor      = checkpoint.get("cursor")
+    found       = checkpoint.get("found", {})
+    page_num    = 0
+
+    if cursor:
+        print(f"  Resuming from checkpoint — {len(found):,} SKUs found so far")
+    else:
+        print("  Starting fresh scan...")
 
     while True:
         page_num += 1
@@ -105,7 +167,7 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
                 time.sleep(10)
                 continue
 
-            errors = resp.get("errors", [])
+            errors    = resp.get("errors", [])
             throttled = any(
                 "credit" in str(e).lower() or "complexity" in str(e).lower()
                 for e in errors
@@ -125,44 +187,47 @@ def fetch_matching_skus(tracked_tags: set) -> list[dict]:
             for edge in data.get("edges", []):
                 node      = edge["node"]
                 sku       = node.get("sku", "")
-                name      = node.get("name", "")
                 prod_tags = node.get("tags") or []
-
                 if tracked_tags.intersection(set(prod_tags)):
-                    matching.append({
-                        "sku":  sku,
-                        "name": name,
+                    found[sku] = {
+                        "name": node.get("name", ""),
                         "tags": prod_tags,
-                    })
+                    }
 
-            page = data.get("pageInfo", {})
-            if not page.get("hasNextPage"):
-                print(f"  Pagination complete — {page_num} pages scanned, "
-                      f"{len(matching)} matching SKUs")
-                return matching
+            page_info = data.get("pageInfo", {})
 
-            cursor = page["endCursor"]
+            # Save checkpoint every 50 pages
+            if page_num % 50 == 0:
+                print(f"  Page {page_num}: checkpoint saved — {len(found):,} matches so far")
+                save_checkpoint(page_info.get("endCursor", ""), found)
+
+            if not page_info.get("hasNextPage"):
+                print(f"  Scan complete — {page_num} pages, {len(found):,} matching SKUs")
+                clear_checkpoint()
+                return found
+
+            cursor = page_info["endCursor"]
             break
 
         time.sleep(0.2)
 
-    return matching
+    return found
 
 
-def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
+# ── Phase 2: Nightly Inventory Pull ──────────────────────────────────────────
+def fetch_inventory_batched(skus: dict) -> list[dict]:
     """
-    Fetch inventory locations for matched SKUs using batch aliasing.
+    Fetch inventory for known SKUs only.
     Only includes rows where quantity > 0.
-    Products with no active locations still appear as No Active Bin.
     """
-    sku_list = [s["sku"] for s in skus]
-    sku_meta = {s["sku"]: s for s in skus}
+    sku_list = list(skus.keys())
     batches  = [sku_list[i:i+BATCH_SIZE] for i in range(0, len(sku_list), BATCH_SIZE)]
     rows     = []
     total    = len(batches)
 
     for batch_idx, batch in enumerate(batches):
-        print(f"  Inventory batch {batch_idx+1}/{total}")
+        if batch_idx % 50 == 0:
+            print(f"  Inventory batch {batch_idx+1}/{total}")
 
         aliases = "\n".join([
             f"""
@@ -184,12 +249,11 @@ def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
         while retries < 5:
             resp = _gql(query)
             if not resp:
-                print(f"    Empty response — retry")
                 retries += 1
                 time.sleep(10)
                 continue
 
-            errors = resp.get("errors", [])
+            errors    = resp.get("errors", [])
             throttled = any(
                 "credit" in str(e).lower() or "complexity" in str(e).lower()
                 for e in errors
@@ -203,7 +267,7 @@ def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
             for key, product in (resp.get("data") or {}).items():
                 idx_in_batch = int(key[1:])
                 sku          = batch[idx_in_batch]
-                meta         = sku_meta[sku]
+                meta         = skus[sku]
 
                 if not product:
                     rows.append({
@@ -221,7 +285,6 @@ def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
                 )
 
                 if not wp_list:
-                    # No active bin — still include as No Active Bin
                     rows.append({
                         "sku":           sku,
                         "product_name":  meta["name"],
@@ -242,8 +305,6 @@ def fetch_inventory_batched(skus: list[dict]) -> list[dict]:
                                 "location_name": wp.get("location"),
                                 "quantity":      qty,
                             })
-                    # If product has locations but all are zero qty
-                    # still show as No Active Bin
                     if not has_stock:
                         rows.append({
                             "sku":           sku,
@@ -263,9 +324,7 @@ def upload_snapshot(rows: list[dict], snapshot_date: str):
     payload  = json.dumps(rows, default=str).encode("utf-8")
     gz_bytes = gzip.compress(payload)
     key      = f"inventory/{snapshot_date}.json.gz"
-
-    s3 = _s3()
-    s3.put_object(
+    _s3().put_object(
         Bucket          = SPACES_BUCKET,
         Key             = key,
         Body            = gz_bytes,
@@ -275,34 +334,59 @@ def upload_snapshot(rows: list[dict], snapshot_date: str):
     print(f"Uploaded {key} ({len(gz_bytes)/1024:.1f} KB, {len(rows):,} rows)")
 
 
-def main(args: dict = {}) -> dict:
-    today = str(date.today())
-    print(f"=== Nightly Pull Starting: {today} ===")
-
+# ── Entry points ──────────────────────────────────────────────────────────────
+def run_weekly_scan(args: dict = {}) -> dict:
+    """
+    Weekly job: discover all SKUs with tracked tags.
+    Saves to known_skus.json. Supports checkpoint/resume.
+    """
+    print(f"=== Weekly SKU Scan Starting: {date.today()} ===")
     tracked_tags = load_tracked_tags()
     if not tracked_tags:
-        return {"statusCode": 500, "body": "No tracked tags found — aborting"}
+        return {"statusCode": 500, "body": "No tracked tags"}
 
-    print("Step 1: Scanning all products for tracked tags...")
-    matching_skus = fetch_matching_skus(tracked_tags)
-    print(f"Found {len(matching_skus):,} products with tracked tags")
+    known_skus = weekly_sku_scan(tracked_tags)
+    save_known_skus(known_skus)
 
-    if not matching_skus:
-        return {"statusCode": 200, "body": "No matching products found"}
+    # Also run inventory pull for today after scan completes
+    print("Running inventory pull for today...")
+    rows = fetch_inventory_batched(known_skus)
+    upload_snapshot(rows, str(date.today()))
 
-    print("Step 2: Fetching inventory locations...")
-    rows = fetch_inventory_batched(matching_skus)
-    print(f"Got {len(rows):,} inventory rows ({sum(1 for r in rows if r['quantity'] > 0):,} with stock)")
-
-    print("Step 3: Uploading snapshot...")
-    upload_snapshot(rows, today)
-
-    summary = (
-        f"Done — {len(matching_skus):,} products, "
-        f"{len(rows):,} inventory rows for {today}"
-    )
+    summary = f"Weekly scan done — {len(known_skus):,} SKUs, {len(rows):,} inventory rows"
     print(f"=== {summary} ===")
     return {"statusCode": 200, "body": summary}
+
+
+def run_nightly_pull(args: dict = {}) -> dict:
+    """
+    Nightly job: fetch inventory for known SKUs only.
+    Fast — skips the full product scan.
+    """
+    print(f"=== Nightly Pull Starting: {date.today()} ===")
+
+    known_skus = load_known_skus()
+    if not known_skus:
+        print("No known SKUs found — running full scan instead")
+        return run_weekly_scan()
+
+    print(f"Fetching inventory for {len(known_skus):,} known SKUs...")
+    rows = fetch_inventory_batched(known_skus)
+    print(f"Got {len(rows):,} inventory rows")
+
+    upload_snapshot(rows, str(date.today()))
+
+    summary = f"Done — {len(known_skus):,} SKUs, {len(rows):,} rows for {date.today()}"
+    print(f"=== {summary} ===")
+    return {"statusCode": 200, "body": summary}
+
+
+def main(args: dict = {}) -> dict:
+    mode = os.environ.get("PULL_MODE", "nightly")
+    if mode == "weekly":
+        return run_weekly_scan(args)
+    else:
+        return run_nightly_pull(args)
 
 
 if __name__ == "__main__":

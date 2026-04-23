@@ -1,21 +1,26 @@
-name: Nightly ShipHero Pull
+name: Nightly Inventory Pull
 
 on:
   schedule:
-    - cron: '0 23 * * *'  # 11pm EST = 11pm local / adjust as needed
-  workflow_dispatch:        # allows manual trigger from GitHub
+    - cron: '0 7 * * 1-6'  # 2am EST Mon-Sat (after 1am product upload)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Pull mode (nightly or weekly)'
+        required: false
+        default: 'nightly'
 
 jobs:
   pull:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -30,4 +35,5 @@ jobs:
           SPACES_SECRET: ${{ secrets.SPACES_SECRET }}
           SPACES_BUCKET: ${{ secrets.SPACES_BUCKET }}
           SPACES_REGION: ${{ secrets.SPACES_REGION }}
+          PULL_MODE: ${{ github.event.inputs.mode || 'nightly' }}
         run: python nightly_pull.py
