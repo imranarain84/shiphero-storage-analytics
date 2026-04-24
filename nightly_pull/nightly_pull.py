@@ -246,7 +246,6 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                         quantity
                         location {{
                           name
-                          type
                         }}
                       }}
                     }}
