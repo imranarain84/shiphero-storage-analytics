@@ -243,8 +243,11 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                   locations {{
                     edges {{
                       node {{
-                        location
                         quantity
+                        location {{
+                          name
+                          type
+                        }}
                       }}
                     }}
                   }}
@@ -261,7 +264,7 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
             resp = _gql(query)
 
             if debug and batch_idx == 0:
-                print(f"DEBUG first batch response: {json.dumps(resp)[:1000]}")
+                print(f"DEBUG first batch response: {json.dumps(resp)[:1500]}")
 
             if not resp:
                 retries += 1
@@ -316,15 +319,17 @@ def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
                               .get("edges", [])
                         )
                         for edge in loc_edges:
-                            node = edge.get("node", {})
-                            qty  = node.get("quantity", 0) or 0
+                            node     = edge.get("node", {})
+                            qty      = node.get("quantity", 0) or 0
+                            loc_obj  = node.get("location") or {}
+                            loc_name = loc_obj.get("name")
                             if qty > 0:
                                 has_stock = True
                                 rows.append({
                                     "sku":           sku,
                                     "product_name":  meta["name"],
                                     "tags":          meta["tags"],
-                                    "location_name": node.get("location"),
+                                    "location_name": loc_name,
                                     "quantity":      qty,
                                 })
                     if not has_stock:
