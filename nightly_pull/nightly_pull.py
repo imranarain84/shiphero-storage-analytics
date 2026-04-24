@@ -13,7 +13,7 @@ SPACES_BUCKET   = os.environ["SPACES_BUCKET"]
 SPACES_REGION   = os.environ.get("SPACES_REGION", "nyc3")
 SPACES_ENDPOINT = f"https://{SPACES_REGION}.digitaloceanspaces.com"
 
-BATCH_SIZE      = 12
+BATCH_SIZE      = 3
 API_URL         = "https://public-api.shiphero.com/graphql"
 HEADERS         = {
     "Authorization": f"Bearer {SHIPHERO_TOKEN}",
