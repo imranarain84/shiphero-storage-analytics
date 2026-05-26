@@ -1,29 +1,16 @@
 import os
 import json
 import gzip
-import time
 import boto3
-import requests
-from datetime import date, datetime
+import pandas as pd
+from datetime import date
+from io import BytesIO
 
-SHIPHERO_TOKEN  = os.environ["SHIPHERO_TOKEN"]
 SPACES_KEY      = os.environ["SPACES_KEY"]
 SPACES_SECRET   = os.environ["SPACES_SECRET"]
 SPACES_BUCKET   = os.environ["SPACES_BUCKET"]
 SPACES_REGION   = os.environ.get("SPACES_REGION", "nyc3")
 SPACES_ENDPOINT = f"https://{SPACES_REGION}.digitaloceanspaces.com"
-
-BATCH_SIZE      = 3
-API_URL         = "https://public-api.shiphero.com/graphql"
-HEADERS         = {
-    "Authorization": f"Bearer {SHIPHERO_TOKEN}",
-    "Content-Type":  "application/json",
-}
-
-KNOWN_SKUS_KEY  = "config/known_skus.json"
-CHECKPOINT_KEY  = "config/sku_scan_checkpoint.json"
-SCAN_START      = datetime.utcnow()
-MAX_MINUTES     = 340
 
 
 def _s3():
@@ -36,313 +23,53 @@ def _s3():
     )
 
 
-def _s3_get(key: str) -> dict:
-    try:
-        obj = _s3().get_object(Bucket=SPACES_BUCKET, Key=key)
-        return json.loads(obj["Body"].read())
-    except Exception:
-        return {}
+def load_latest_csv() -> pd.DataFrame:
+    """
+    Find and load the most recent ShipHero CSV from Spaces.
+    Files are stored under reports/ with names like inventory_YYYY-MM-DD.csv
+    """
+    s3   = _s3()
+    resp = s3.list_objects_v2(Bucket=SPACES_BUCKET, Prefix="reports/")
+    
+    files = [
+        obj["Key"] for obj in resp.get("Contents", [])
+        if obj["Key"].endswith(".csv")
+    ]
+    
+    if not files:
+        raise FileNotFoundError("No CSV files found in reports/ folder in Spaces")
+    
+    latest = sorted(files)[-1]
+    print(f"Loading CSV: {latest}")
+    
+    obj  = s3.get_object(Bucket=SPACES_BUCKET, Key=latest)
+    data = obj["Body"].read()
+    return pd.read_csv(BytesIO(data))
 
 
-def _s3_put(key: str, data: dict):
-    _s3().put_object(
-        Bucket      = SPACES_BUCKET,
-        Key         = key,
-        Body        = json.dumps(data, indent=2).encode("utf-8"),
-        ContentType = "application/json",
-    )
+def csv_to_snapshot_rows(df: pd.DataFrame) -> list[dict]:
+    """
+    Convert the ShipHero CSV into the snapshot row format
+    the Streamlit app expects.
+    """
+    rows = []
+    for _, row in df.iterrows():
+        tags_raw = row.get("Product Tags", "")
+        if pd.isna(tags_raw):
+            tags = []
+        else:
+            tags = [t.strip() for t in str(tags_raw).split("|") if t.strip()]
 
-
-def _approaching_limit() -> bool:
-    elapsed = (datetime.utcnow() - SCAN_START).total_seconds() / 60
-    return elapsed > MAX_MINUTES
-
-
-def _gql(query: str, retries: int = 3) -> dict:
-    for attempt in range(retries):
-        try:
-            resp = requests.post(
-                API_URL,
-                json    = {"query": query},
-                headers = HEADERS,
-                timeout = 120,
-            )
-            return resp.json()
-        except requests.exceptions.ReadTimeout:
-            print(f"    Request timed out — retry {attempt+1}/{retries}")
-            time.sleep(10)
-        except Exception as e:
-            print(f"    Request error: {e} — retry {attempt+1}/{retries}")
-            time.sleep(10)
-    return {}
-
-
-def load_tracked_tags() -> set:
-    data = _s3_get("config/tracked_tags.json")
-    tags = set(data.get("tags", []))
-    print(f"Loaded {len(tags)} tracked tags")
-    return tags
-
-
-def load_known_skus() -> dict:
-    data = _s3_get(KNOWN_SKUS_KEY)
-    skus = data.get("skus", {})
-    print(f"Loaded {len(skus):,} known SKUs from Spaces")
-    return skus
-
-
-def save_known_skus(skus: dict):
-    _s3_put(KNOWN_SKUS_KEY, {
-        "skus":         skus,
-        "last_updated": datetime.utcnow().isoformat(),
-        "count":        len(skus),
-    })
-    print(f"Saved {len(skus):,} known SKUs to Spaces")
-
-
-def load_checkpoint() -> dict:
-    return _s3_get(CHECKPOINT_KEY)
-
-
-def save_checkpoint(cursor: str, found: dict):
-    _s3_put(CHECKPOINT_KEY, {
-        "cursor":   cursor,
-        "found":    found,
-        "saved_at": datetime.utcnow().isoformat(),
-    })
-    print(f"  Checkpoint saved — {len(found):,} matches, cursor: {cursor[:20]}...")
-
-
-def clear_checkpoint():
-    try:
-        _s3().delete_object(Bucket=SPACES_BUCKET, Key=CHECKPOINT_KEY)
-        print("  Checkpoint cleared")
-    except Exception:
-        pass
-
-
-def flag_needs_resume():
-    with open("/tmp/needs_resume", "w") as f:
-        f.write("1")
-    print("  Flagged for auto re-trigger")
-
-
-def weekly_sku_scan(tracked_tags: set) -> tuple[dict, bool]:
-    checkpoint = load_checkpoint()
-    cursor     = checkpoint.get("cursor")
-    found      = checkpoint.get("found", {})
-    page_num   = 0
-
-    if cursor:
-        print(f"  Resuming from checkpoint — {len(found):,} SKUs found so far")
-    else:
-        print("  Starting fresh scan...")
-
-    while True:
-        if _approaching_limit():
-            print(f"  Approaching time limit at page {page_num} — saving checkpoint")
-            save_checkpoint(cursor or "", found)
-            flag_needs_resume()
-            return found, False
-
-        page_num += 1
-        after = f', after: "{cursor}"' if cursor else ""
-
-        query = f"""
-        query {{
-          products {{
-            data(first: 100{after}) {{
-              edges {{
-                node {{
-                  sku
-                  name
-                  tags
-                }}
-              }}
-              pageInfo {{
-                hasNextPage
-                endCursor
-              }}
-            }}
-          }}
-        }}
-        """
-
-        retries = 0
-        while retries < 5:
-            resp = _gql(query)
-            if not resp:
-                print(f"  Page {page_num}: empty response — retry")
-                retries += 1
-                time.sleep(10)
-                continue
-
-            errors    = resp.get("errors", [])
-            throttled = any(
-                "credit" in str(e).lower() or "complexity" in str(e).lower()
-                for e in errors
-            )
-            if throttled:
-                print(f"  Page {page_num}: throttled — waiting 15s")
-                time.sleep(15)
-                retries += 1
-                continue
-
-            data = (
-                resp.get("data", {})
-                    .get("products", {})
-                    .get("data", {})
-            )
-
-            for edge in data.get("edges", []):
-                node      = edge["node"]
-                sku       = node.get("sku", "")
-                prod_tags = node.get("tags") or []
-                if tracked_tags.intersection(set(prod_tags)):
-                    found[sku] = {
-                        "name": node.get("name", ""),
-                        "tags": prod_tags,
-                    }
-
-            page_info = data.get("pageInfo", {})
-
-            if page_num % 50 == 0:
-                print(f"  Page {page_num}: checkpoint — {len(found):,} matches so far")
-                save_checkpoint(page_info.get("endCursor", ""), found)
-
-            if not page_info.get("hasNextPage"):
-                print(f"  Scan complete — {page_num} pages, {len(found):,} matching SKUs")
-                clear_checkpoint()
-                return found, True
-
-            cursor = page_info["endCursor"]
-            break
-
-        time.sleep(0.2)
-
-    return found, False
-
-
-def fetch_inventory_batched(skus: dict, debug: bool = False) -> list[dict]:
-    sku_list = list(skus.keys())
-    batches  = [sku_list[i:i+BATCH_SIZE] for i in range(0, len(sku_list), BATCH_SIZE)]
-    rows     = []
-    total    = len(batches)
-
-    for batch_idx, batch in enumerate(batches):
-        if batch_idx % 50 == 0:
-            print(f"  Inventory batch {batch_idx+1}/{total}")
-
-        aliases = "\n".join([
-            f"""
-            s{i}: product(sku: "{sku}") {{
-              data {{
-                sku
-                warehouse_products {{
-                  on_hand
-                  locations {{
-                    edges {{
-                      node {{
-                        quantity
-                        location {{
-                          name
-                        }}
-                      }}
-                    }}
-                  }}
-                }}
-              }}
-            }}
-            """
-            for i, sku in enumerate(batch)
-        ])
-        query = f"query BatchInv {{\n{aliases}\n}}"
-
-        retries = 0
-        while retries < 5:
-            resp = _gql(query)
-
-            if debug and batch_idx == 0:
-                print(f"DEBUG first batch response: {json.dumps(resp)[:1500]}")
-
-            if not resp:
-                retries += 1
-                time.sleep(10)
-                continue
-
-            errors    = resp.get("errors", [])
-            throttled = any(
-                "credit" in str(e).lower() or "complexity" in str(e).lower()
-                for e in errors
-            )
-            if throttled:
-                print(f"    Throttled — waiting 15s")
-                time.sleep(15)
-                retries += 1
-                continue
-
-            if errors and batch_idx == 0:
-                print(f"  Errors in first batch: {errors[:2]}")
-
-            for key, result in (resp.get("data") or {}).items():
-                idx_in_batch = int(key[1:])
-                sku          = batch[idx_in_batch]
-                meta         = skus[sku]
-                product      = (result or {}).get("data")
-
-                if not product:
-                    rows.append({
-                        "sku":           sku,
-                        "product_name":  meta["name"],
-                        "tags":          meta["tags"],
-                        "location_name": None,
-                        "quantity":      0,
-                    })
-                    continue
-
-                wp_list = product.get("warehouse_products") or []
-
-                if not wp_list:
-                    rows.append({
-                        "sku":           sku,
-                        "product_name":  meta["name"],
-                        "tags":          meta["tags"],
-                        "location_name": None,
-                        "quantity":      0,
-                    })
-                else:
-                    has_stock = False
-                    for wp in wp_list:
-                        loc_edges = (
-                            wp.get("locations", {})
-                              .get("edges", [])
-                        )
-                        for edge in loc_edges:
-                            node     = edge.get("node", {})
-                            qty      = node.get("quantity", 0) or 0
-                            loc_obj  = node.get("location") or {}
-                            loc_name = loc_obj.get("name")
-                            if qty > 0:
-                                has_stock = True
-                                rows.append({
-                                    "sku":           sku,
-                                    "product_name":  meta["name"],
-                                    "tags":          meta["tags"],
-                                    "location_name": loc_name,
-                                    "quantity":      qty,
-                                })
-                    if not has_stock:
-                        rows.append({
-                            "sku":           sku,
-                            "product_name":  meta["name"],
-                            "tags":          meta["tags"],
-                            "location_name": None,
-                            "quantity":      0,
-                        })
-            break
-
-        time.sleep(0.1)
-
+        rows.append({
+            "sku":           str(row.get("SKU", "")).strip(),
+            "product_name":  str(row.get("Product Name", "")).strip(),
+            "tags":          tags,
+            "customer":      str(row.get("3PL Customer", "")).strip(),
+            "location_name": str(row.get("Bin/Location Name", "")).strip() or None,
+            "storage_type":  str(row.get("Storage Location Type", "")).strip() or None,
+            "quantity":      int(row.get("Quantity", 0) or 0),
+            "warehouse":     str(row.get("Warehouse Name", "")).strip(),
+        })
     return rows
 
 
@@ -350,6 +77,7 @@ def upload_snapshot(rows: list[dict], snapshot_date: str):
     payload  = json.dumps(rows, default=str).encode("utf-8")
     gz_bytes = gzip.compress(payload)
     key      = f"inventory/{snapshot_date}.json.gz"
+
     _s3().put_object(
         Bucket          = SPACES_BUCKET,
         Key             = key,
@@ -360,53 +88,23 @@ def upload_snapshot(rows: list[dict], snapshot_date: str):
     print(f"Uploaded {key} ({len(gz_bytes)/1024:.1f} KB, {len(rows):,} rows)")
 
 
-def run_weekly_scan(args: dict = {}) -> dict:
-    print(f"=== Weekly SKU Scan Starting: {date.today()} ===")
-    tracked_tags = load_tracked_tags()
-    if not tracked_tags:
-        return {"statusCode": 500, "body": "No tracked tags"}
-
-    found, is_complete = weekly_sku_scan(tracked_tags)
-
-    if is_complete:
-        save_known_skus(found)
-        print("Running inventory pull for today...")
-        rows = fetch_inventory_batched(found, debug=True)
-        upload_snapshot(rows, str(date.today()))
-        summary = f"Weekly scan done — {len(found):,} SKUs, {len(rows):,} inventory rows"
-    else:
-        save_known_skus(found)
-        summary = f"Weekly scan paused — {len(found):,} SKUs found so far, will resume"
-
-    print(f"=== {summary} ===")
-    return {"statusCode": 200, "body": summary}
-
-
-def run_nightly_pull(args: dict = {}) -> dict:
-    print(f"=== Nightly Pull Starting: {date.today()} ===")
-
-    known_skus = load_known_skus()
-    if not known_skus:
-        print("No known SKUs — running full scan instead")
-        return run_weekly_scan()
-
-    print(f"Fetching inventory for {len(known_skus):,} known SKUs...")
-    rows = fetch_inventory_batched(known_skus, debug=True)
-    print(f"Got {len(rows):,} inventory rows")
-
-    upload_snapshot(rows, str(date.today()))
-
-    summary = f"Done — {len(known_skus):,} SKUs, {len(rows):,} rows for {date.today()}"
-    print(f"=== {summary} ===")
-    return {"statusCode": 200, "body": summary}
-
-
 def main(args: dict = {}) -> dict:
-    mode = os.environ.get("PULL_MODE", "nightly")
-    if mode == "weekly":
-        return run_weekly_scan(args)
-    else:
-        return run_nightly_pull(args)
+    today = str(date.today())
+    print(f"=== Nightly Pull Starting: {today} ===")
+
+    df = load_latest_csv()
+    print(f"Loaded {len(df):,} rows from CSV")
+
+    # Only keep rows with actual stock
+    df = df[df["Quantity"] > 0]
+    print(f"{len(df):,} rows with quantity > 0")
+
+    rows = csv_to_snapshot_rows(df)
+    upload_snapshot(rows, today)
+
+    summary = f"Done — {len(rows):,} rows for {today}"
+    print(f"=== {summary} ===")
+    return {"statusCode": 200, "body": summary}
 
 
 if __name__ == "__main__":
