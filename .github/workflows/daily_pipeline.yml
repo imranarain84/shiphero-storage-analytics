@@ -1,0 +1,43 @@
+name: Daily CSV Pipeline
+
+on:
+  schedule:
+    - cron: '0 11 * * *'  # 6am EST = 11am UTC
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r nightly_pull/requirements.txt
+
+      - name: Fetch CSV from Gmail
+        working-directory: nightly_pull
+        env:
+          GMAIL_USER:     ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          SPACES_KEY:     ${{ secrets.SPACES_KEY }}
+          SPACES_SECRET:  ${{ secrets.SPACES_SECRET }}
+          SPACES_BUCKET:  ${{ secrets.SPACES_BUCKET }}
+          SPACES_REGION:  ${{ secrets.SPACES_REGION }}
+        run: python gmail_fetch.py
+
+      - name: Process CSV into snapshot
+        working-directory: nightly_pull
+        env:
+          SPACES_KEY:    ${{ secrets.SPACES_KEY }}
+          SPACES_SECRET: ${{ secrets.SPACES_SECRET }}
+          SPACES_BUCKET: ${{ secrets.SPACES_BUCKET }}
+          SPACES_REGION: ${{ secrets.SPACES_REGION }}
+        run: python nightly_pull.py
