@@ -6,7 +6,10 @@ from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from logic.spaces     import list_available_dates, load_snapshot, load_date_range
+from logic.spaces     import (
+    list_available_dates, load_snapshot, load_date_range,
+    authenticate, get_all_customers,
+)
 from logic.calculator import calculate_costs
 
 st.set_page_config(
@@ -16,13 +19,50 @@ st.set_page_config(
     initial_sidebar_state = "expanded",
 )
 
-# Hide image toolbar
 st.markdown("""
     <style>
     [data-testid="stImage"] button { display: none !important; }
     [data-testid="stImageToolbar"] { display: none !important; }
     </style>
 """, unsafe_allow_html=True)
+
+# ── Session state defaults ────────────────────────────────────────────────────
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# ── Login screen ──────────────────────────────────────────────────────────────
+if not st.session_state.authenticated:
+    _, col, _ = st.columns([1, 1, 1])
+    with col:
+        vp_logo = os.path.join(os.path.dirname(__file__), "assets",
+                               "VP Logo Horizontal Transparent White Lettering.png")
+        if os.path.exists(vp_logo):
+            st.image(vp_logo, width=300)
+
+        st.markdown(
+            "<h2 style='text-align:center; margin-bottom:20px;'>Warehouse Storage Cost Report</h2>",
+            unsafe_allow_html=True,
+        )
+
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Log In", type="primary", use_container_width=True):
+            user = authenticate(username, password)
+            if user:
+                st.session_state.authenticated = True
+                st.session_state.user          = user
+                st.session_state.username      = username.strip().lower()
+                st.rerun()
+            else:
+                st.error("Incorrect username or password.")
+    st.stop()
+
+# ── Logged in ─────────────────────────────────────────────────────────────────
+user     = st.session_state.user
+is_admin = user.get("is_admin", False)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -60,7 +100,14 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.caption("🔒 [Admin Panel](/Admin)")
+
+    if is_admin:
+        st.caption("🔒 [Admin Panel](/Admin)")
+
+    if st.button("Log Out", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.user          = None
+        st.rerun()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 _, col_center, _ = st.columns([1, 2, 1])
@@ -83,49 +130,68 @@ if not available_dates:
     )
     st.stop()
 
-# ── Load latest snapshot to populate filters ──────────────────────────────────
+# ── Customer filter ───────────────────────────────────────────────────────────
+latest_date   = available_dates[-1]
+all_customers = get_all_customers(latest_date)
+
+# Determine which customers this user can see
+if is_admin:
+    allowed_customers = all_customers
+else:
+    user_customers    = user.get("customers") or []
+    allowed_customers = [c for c in all_customers if c in user_customers]
+
+if not allowed_customers:
+    st.warning("No customers assigned to your account. Please contact your administrator.")
+    st.stop()
+
+if len(allowed_customers) == 1:
+    # Only one customer — select it automatically, no dropdown needed
+    selected_customers = allowed_customers
+    st.caption(f"Showing data for: **{allowed_customers[0]}**")
+else:
+    selected_customers = st.multiselect(
+        "Filter by Customer",
+        options  = allowed_customers,
+        default  = allowed_customers,
+        help     = "Select one or more customers to include in the report",
+    )
+
+# ── Tag filter ────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
-def get_filter_options(snapshot_date: str) -> tuple[list[str], list[str]]:
-    rows      = load_snapshot(snapshot_date)
-    customers = sorted(set(r.get("customer", "") for r in rows if r.get("customer")))
-    tags      = sorted(set(
-        t for r in rows
-        for t in (r.get("tags") or [])
-        if t
-    ))
-    return customers, tags
+def get_tags_for_customers(snapshot_date: str, customers: tuple) -> list[str]:
+    rows     = load_snapshot(snapshot_date)
+    cust_set = set(customers)
+    tags     = set()
+    for row in rows:
+        if row.get("customer") in cust_set:
+            for t in (row.get("tags") or []):
+                if t:
+                    tags.add(t)
+    return sorted(tags)
 
-latest_date         = available_dates[-1]
-all_customers, all_tags = get_filter_options(latest_date)
+if selected_customers:
+    all_tags = get_tags_for_customers(latest_date, tuple(sorted(selected_customers)))
 
-# ── Filters ───────────────────────────────────────────────────────────────────
-filter_mode = st.radio(
-    "Filter by",
-    options  = ["3PL Customer", "Product Tag"],
-    horizontal = True,
-)
-
-if filter_mode == "3PL Customer":
-    selected = st.multiselect(
-        "Select Customer(s)",
-        options = all_customers,
-        default = all_customers[:1] if all_customers else [],
+    selected_tags = st.multiselect(
+        "Filter by Product Tag (optional)",
+        options = all_tags,
+        default = [],
+        help    = "Leave blank to show all products, or select tags to drill down",
     )
 else:
-    selected = st.multiselect(
-        "Select Tag(s)",
-        options = all_tags,
-        default = all_tags[:1] if all_tags else [],
-    )
+    selected_tags = []
 
 # ── Generate Report ───────────────────────────────────────────────────────────
 if st.button("🚀 Generate Report", type="primary"):
 
-    if not selected:
-        st.warning("Please select at least one option.")
+    if not selected_customers:
+        st.warning("Please select at least one customer.")
         st.stop()
 
     num_days = max((end_date - start_date).days, 1)
+    cust_set = set(selected_customers)
+    tag_set  = set(selected_tags)
 
     with st.spinner("Loading inventory snapshot..."):
         snapshots = load_date_range(str(start_date), str(end_date))
@@ -140,15 +206,14 @@ if st.button("🚀 Generate Report", type="primary"):
     snapshot_date = max(snapshots.keys())
     rows          = snapshots[snapshot_date]
 
-    # Filter rows
-    if filter_mode == "3PL Customer":
-        selected_set  = set(selected)
-        filtered_rows = [r for r in rows if r.get("customer") in selected_set]
-    else:
-        selected_set  = set(selected)
+    # Filter by customer
+    filtered_rows = [r for r in rows if r.get("customer") in cust_set]
+
+    # Optionally filter by tag
+    if tag_set:
         filtered_rows = [
-            r for r in rows
-            if selected_set.intersection(set(r.get("tags") or []))
+            r for r in filtered_rows
+            if tag_set.intersection(set(r.get("tags") or []))
         ]
 
     if not filtered_rows:
