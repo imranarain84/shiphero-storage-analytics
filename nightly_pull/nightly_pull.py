@@ -24,34 +24,26 @@ def _s3():
 
 
 def load_latest_csv() -> pd.DataFrame:
-    """
-    Find and load the most recent ShipHero CSV from Spaces.
-    Files are stored under reports/ with names like inventory_YYYY-MM-DD.csv
-    """
     s3   = _s3()
     resp = s3.list_objects_v2(Bucket=SPACES_BUCKET, Prefix="reports/")
-    
+
     files = [
         obj["Key"] for obj in resp.get("Contents", [])
         if obj["Key"].endswith(".csv")
     ]
-    
+
     if not files:
         raise FileNotFoundError("No CSV files found in reports/ folder in Spaces")
-    
+
     latest = sorted(files)[-1]
     print(f"Loading CSV: {latest}")
-    
+
     obj  = s3.get_object(Bucket=SPACES_BUCKET, Key=latest)
     data = obj["Body"].read()
-    return pd.read_csv(BytesIO(data))
+    return pd.read_csv(BytesIO(data), on_bad_lines='skip')
 
 
 def csv_to_snapshot_rows(df: pd.DataFrame) -> list[dict]:
-    """
-    Convert the ShipHero CSV into the snapshot row format
-    the Streamlit app expects.
-    """
     rows = []
     for _, row in df.iterrows():
         tags_raw = row.get("Product Tags", "")
@@ -95,7 +87,6 @@ def main(args: dict = {}) -> dict:
     df = load_latest_csv()
     print(f"Loaded {len(df):,} rows from CSV")
 
-    # Only keep rows with actual stock
     df = df[df["Quantity"] > 0]
     print(f"{len(df):,} rows with quantity > 0")
 
