@@ -16,22 +16,13 @@ st.set_page_config(
     initial_sidebar_state = "expanded",
 )
 
-# Hide image toolbar (expand/open buttons on images)
+# Hide image toolbar
 st.markdown("""
     <style>
     [data-testid="stImage"] button { display: none !important; }
     [data-testid="stImageToolbar"] { display: none !important; }
     </style>
 """, unsafe_allow_html=True)
-
-@st.cache_data
-def load_loc_map():
-    csv_path = os.path.join(os.path.dirname(__file__), "data",
-                            "ShipHero - Location Names and Info.csv")
-    df = pd.read_csv(csv_path)
-    return dict(zip(df["Location"], df["Type"]))
-
-loc_type_map = load_loc_map()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -72,10 +63,10 @@ with st.sidebar:
     st.caption("🔒 [Admin Panel](/Admin)")
 
 # ── Header ────────────────────────────────────────────────────────────────────
-vp_logo = os.path.join(os.path.dirname(__file__), "assets",
-                       "VP Logo Horizontal Transparent White Lettering.png")
 _, col_center, _ = st.columns([1, 2, 1])
 with col_center:
+    vp_logo = os.path.join(os.path.dirname(__file__), "assets",
+                           "VP Logo Horizontal Transparent White Lettering.png")
     if os.path.exists(vp_logo):
         st.image(vp_logo, width=300)
     st.markdown(
@@ -88,38 +79,53 @@ st.markdown("---")
 if not available_dates:
     st.warning(
         "No inventory snapshots found yet. "
-        "The nightly pull runs at 11pm — check back after the first run."
+        "The daily pipeline runs at 6am — check back after the first run."
     )
     st.stop()
 
+# ── Load latest snapshot to populate filters ──────────────────────────────────
 @st.cache_data(ttl=3600)
-def get_all_tags(snapshot_date: str) -> list[str]:
-    rows = load_snapshot(snapshot_date)
-    tags = set()
-    for row in rows:
-        for t in (row.get("tags") or []):
-            if t:
-                tags.add(t)
-    return sorted(tags)
+def get_filter_options(snapshot_date: str) -> tuple[list[str], list[str]]:
+    rows      = load_snapshot(snapshot_date)
+    customers = sorted(set(r.get("customer", "") for r in rows if r.get("customer")))
+    tags      = sorted(set(
+        t for r in rows
+        for t in (r.get("tags") or [])
+        if t
+    ))
+    return customers, tags
 
-latest_date = available_dates[-1]
-all_tags    = get_all_tags(latest_date)
+latest_date         = available_dates[-1]
+all_customers, all_tags = get_filter_options(latest_date)
 
-selected_tags = st.multiselect(
-    "Filter by Client / Brand Tag",
-    options = all_tags,
-    default = all_tags[:3] if all_tags else [],
-    help    = "Show only products that have at least one of the selected tags",
+# ── Filters ───────────────────────────────────────────────────────────────────
+filter_mode = st.radio(
+    "Filter by",
+    options  = ["3PL Customer", "Product Tag"],
+    horizontal = True,
 )
 
+if filter_mode == "3PL Customer":
+    selected = st.multiselect(
+        "Select Customer(s)",
+        options = all_customers,
+        default = all_customers[:1] if all_customers else [],
+    )
+else:
+    selected = st.multiselect(
+        "Select Tag(s)",
+        options = all_tags,
+        default = all_tags[:1] if all_tags else [],
+    )
+
+# ── Generate Report ───────────────────────────────────────────────────────────
 if st.button("🚀 Generate Report", type="primary"):
 
-    if not selected_tags:
-        st.warning("Please select at least one tag.")
+    if not selected:
+        st.warning("Please select at least one option.")
         st.stop()
 
     num_days = max((end_date - start_date).days, 1)
-    tag_set  = set(selected_tags)
 
     with st.spinner("Loading inventory snapshot..."):
         snapshots = load_date_range(str(start_date), str(end_date))
@@ -134,13 +140,19 @@ if st.button("🚀 Generate Report", type="primary"):
     snapshot_date = max(snapshots.keys())
     rows          = snapshots[snapshot_date]
 
-    filtered_rows = [
-        r for r in rows
-        if tag_set.intersection(set(r.get("tags") or []))
-    ]
+    # Filter rows
+    if filter_mode == "3PL Customer":
+        selected_set  = set(selected)
+        filtered_rows = [r for r in rows if r.get("customer") in selected_set]
+    else:
+        selected_set  = set(selected)
+        filtered_rows = [
+            r for r in rows
+            if selected_set.intersection(set(r.get("tags") or []))
+        ]
 
     if not filtered_rows:
-        st.warning("No inventory rows match the selected tags in this date range.")
+        st.warning("No inventory rows match the selected filters.")
         st.stop()
 
     st.caption(
@@ -149,13 +161,13 @@ if st.button("🚀 Generate Report", type="primary"):
         f"{num_days} day(s)"
     )
 
-    df         = calculate_costs(filtered_rows, num_days, loc_type_map)
+    df         = calculate_costs(filtered_rows, num_days)
     total_cost = df["Total Cost"].sum()
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("💰 Total Period Cost",  f"${total_cost:,.2f}")
-    m2.metric("📦 Total SKUs",         f"{df['SKU'].nunique():,}")
-    m3.metric("📍 Total Locations",    f"{(df['Location'] != 'No Active Bin').sum():,}")
+    m1.metric("💰 Total Period Cost", f"${total_cost:,.2f}")
+    m2.metric("📦 Total SKUs",        f"{df['SKU'].nunique():,}")
+    m3.metric("📍 Total Locations",   f"{(df['Location'] != 'No Active Bin').sum():,}")
 
     st.markdown("---")
 
