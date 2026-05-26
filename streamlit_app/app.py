@@ -23,6 +23,7 @@ st.markdown("""
     <style>
     [data-testid="stImage"] button { display: none !important; }
     [data-testid="stImageToolbar"] { display: none !important; }
+    [data-testid="stSidebarNav"] { display: none !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -64,6 +65,17 @@ if not st.session_state.authenticated:
 user     = st.session_state.user
 is_admin = user.get("is_admin", False)
 
+available_dates = list_available_dates()
+latest_date     = available_dates[-1] if available_dates else str(date.today())
+all_customers   = get_all_customers(latest_date) if available_dates else []
+
+# Determine which customers this user can see
+if is_admin:
+    allowed_customers = all_customers
+else:
+    user_customers    = user.get("customers") or []
+    allowed_customers = [c for c in all_customers if c in user_customers]
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     logo_path = os.path.join(os.path.dirname(__file__), "assets",
@@ -73,22 +85,58 @@ with st.sidebar:
 
     st.markdown("---")
 
-    available_dates = list_available_dates()
+    # ── Customer filter ───────────────────────────────────────────────────────
+    if not allowed_customers:
+        st.warning("No customers assigned to your account.")
+        st.stop()
 
-    if available_dates:
-        min_date      = date.fromisoformat(available_dates[0])
-        max_date      = date.fromisoformat(available_dates[-1])
-        default_start = max_date - timedelta(days=30)
-        if default_start < min_date:
-            default_start = min_date
+    if len(allowed_customers) == 1:
+        selected_customers = allowed_customers
+        st.caption(f"Customer: **{allowed_customers[0]}**")
     else:
-        min_date      = date.today()
-        max_date      = date.today()
-        default_start = date.today()
+        selected_customers = st.multiselect(
+            "Filter by Customer",
+            options = allowed_customers,
+            default = allowed_customers,
+        )
+
+    # ── Tag filter ────────────────────────────────────────────────────────────
+    @st.cache_data(ttl=3600)
+    def get_tags_for_customers(snapshot_date: str, customers: tuple) -> list[str]:
+        rows     = load_snapshot(snapshot_date)
+        cust_set = set(customers)
+        tags     = set()
+        for row in rows:
+            if row.get("customer") in cust_set:
+                for t in (row.get("tags") or []):
+                    if t:
+                        tags.add(t)
+        return sorted(tags)
+
+    if selected_customers:
+        all_tags = get_tags_for_customers(latest_date, tuple(sorted(selected_customers)))
+        selected_tags = st.multiselect(
+            "Filter by Product Tag (optional)",
+            options = all_tags,
+            default = [],
+            help    = "Leave blank to show all products",
+        )
+    else:
+        selected_tags = []
+
+    st.markdown("---")
+
+    # ── Date range ────────────────────────────────────────────────────────────
+    if available_dates:
+        min_date = date.fromisoformat(available_dates[0])
+        max_date = date.fromisoformat(available_dates[-1])
+    else:
+        min_date = date.today()
+        max_date = date.today()
 
     start_date = st.date_input(
         "Start Date",
-        value     = default_start,
+        value     = min_date,
         min_value = min_date,
         max_value = max_date,
     )
@@ -130,58 +178,6 @@ if not available_dates:
     )
     st.stop()
 
-# ── Customer filter ───────────────────────────────────────────────────────────
-latest_date   = available_dates[-1]
-all_customers = get_all_customers(latest_date)
-
-# Determine which customers this user can see
-if is_admin:
-    allowed_customers = all_customers
-else:
-    user_customers    = user.get("customers") or []
-    allowed_customers = [c for c in all_customers if c in user_customers]
-
-if not allowed_customers:
-    st.warning("No customers assigned to your account. Please contact your administrator.")
-    st.stop()
-
-if len(allowed_customers) == 1:
-    # Only one customer — select it automatically, no dropdown needed
-    selected_customers = allowed_customers
-    st.caption(f"Showing data for: **{allowed_customers[0]}**")
-else:
-    selected_customers = st.multiselect(
-        "Filter by Customer",
-        options  = allowed_customers,
-        default  = allowed_customers,
-        help     = "Select one or more customers to include in the report",
-    )
-
-# ── Tag filter ────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
-def get_tags_for_customers(snapshot_date: str, customers: tuple) -> list[str]:
-    rows     = load_snapshot(snapshot_date)
-    cust_set = set(customers)
-    tags     = set()
-    for row in rows:
-        if row.get("customer") in cust_set:
-            for t in (row.get("tags") or []):
-                if t:
-                    tags.add(t)
-    return sorted(tags)
-
-if selected_customers:
-    all_tags = get_tags_for_customers(latest_date, tuple(sorted(selected_customers)))
-
-    selected_tags = st.multiselect(
-        "Filter by Product Tag (optional)",
-        options = all_tags,
-        default = [],
-        help    = "Leave blank to show all products, or select tags to drill down",
-    )
-else:
-    selected_tags = []
-
 # ── Generate Report ───────────────────────────────────────────────────────────
 if st.button("🚀 Generate Report", type="primary"):
 
@@ -206,10 +202,8 @@ if st.button("🚀 Generate Report", type="primary"):
     snapshot_date = max(snapshots.keys())
     rows          = snapshots[snapshot_date]
 
-    # Filter by customer
     filtered_rows = [r for r in rows if r.get("customer") in cust_set]
 
-    # Optionally filter by tag
     if tag_set:
         filtered_rows = [
             r for r in filtered_rows
