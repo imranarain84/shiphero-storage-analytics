@@ -111,7 +111,7 @@ st.markdown("### Add New User")
 
 col1, col2 = st.columns(2)
 with col1:
-    new_username = st.text_input("Username", placeholder="e.g. universalparks")
+    new_username = st.text_input("Email Address", placeholder="e.g. user@company.com")
 with col2:
     new_password = st.text_input("Password", type="password", placeholder="Set a password")
 
