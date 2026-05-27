@@ -50,6 +50,8 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "user" not in st.session_state:
     st.session_state.user = None
+if "report_data" not in st.session_state:
+    st.session_state.report_data = None
 
 # ── Login screen ──────────────────────────────────────────────────────────────
 if not st.session_state.authenticated:
@@ -250,6 +252,77 @@ if not available_dates:
     st.warning("No inventory snapshots found yet. The daily pipeline runs at 6am.")
     st.stop()
 
+# ── Show persisted report if not regenerating ─────────────────────────────────
+if not generate and st.session_state.report_data:
+    rd         = st.session_state.report_data
+    df         = rd["df"]
+    total_cost = rd["total_cost"]
+    avg_daily  = rd["avg_daily"]
+    total_locs = rd["total_locs"]
+    total_skus = rd["total_skus"]
+    snapshot_date = rd["snapshot_date"]
+    filtered_rows = rd["filtered_rows"]
+    num_days      = rd["num_days"]
+    start_date    = rd["start_date"]
+    end_date      = rd["end_date"]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Cost (Date Range)", f"${total_cost:,.2f}")
+    m2.metric("Avg Daily Cost",          f"${avg_daily:,.2f}")
+    m3.metric("Occupied Locations",      f"{total_locs:,}")
+    m4.metric("In Stock SKUs",           f"{total_skus:,}")
+
+    st.markdown("---")
+    st.markdown("### Cost By Location Type")
+    loc_summary = (
+        df[df["Location"] != "No Active Bin"]
+        .groupby("Storage Type")
+        .agg(
+            Occupied_Locations = ("Location", "count"),
+            Unique_SKUs        = ("SKU", "nunique"),
+            Total_Daily_Cost   = ("Total Cost", "sum"),
+        )
+        .reset_index()
+        .sort_values("Total_Daily_Cost", ascending=False)
+        .rename(columns={
+            "Storage Type":       "Location Type",
+            "Occupied_Locations": "Occupied Locations",
+            "Unique_SKUs":        "Unique SKUs",
+            "Total_Daily_Cost":   "Total Daily Cost",
+        })
+    )
+    loc_summary["Total Daily Cost"] = loc_summary["Total Daily Cost"].apply(lambda x: f"${x:,.2f}")
+    st.dataframe(loc_summary, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown("### Product Detail")
+    search = st.text_input("Search By SKU Or Product Name", placeholder="e.g. UNI-1234 or plush", key="search_persist")
+    display_df = df.copy()
+    display_df["Daily Rate"] = display_df["Daily Rate"].apply(lambda x: f"${x:.4f}")
+    display_df["Total Cost"] = display_df["Total Cost"].apply(lambda x: f"${x:,.2f}")
+    if search.strip():
+        mask = (
+            display_df["SKU"].str.contains(search.strip(), case=False, na=False) |
+            display_df["Product Name"].str.contains(search.strip(), case=False, na=False)
+        )
+        display_df = display_df[mask]
+        st.caption(f"{len(display_df):,} results for '{search.strip()}'")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    csv = df.to_csv(index=False)
+    st.download_button(
+        label     = "📥 Download CSV",
+        data      = csv,
+        file_name = f"storage_report_{start_date}_to_{end_date}.csv",
+        mime      = "text/csv",
+    )
+    st.markdown("---")
+    st.markdown(
+        f"<p style='text-align:center; color:#444; font-size:11px;'>"
+        f"Snapshot: {snapshot_date} · {len(filtered_rows):,} rows · {num_days} day(s) · {APP_VERSION} | Vertical Passage Operations"
+        f"</p>",
+        unsafe_allow_html=True,
+    )
+
 # ── Generate Report ───────────────────────────────────────────────────────────
 if generate:
 
@@ -292,13 +365,28 @@ if generate:
 
     df         = calculate_costs(filtered_rows, num_days)
     total_cost = df["Total Cost"].sum()
+    avg_daily  = total_cost / num_days if num_days > 0 else 0
     total_locs = (df["Location"] != "No Active Bin").sum()
     total_skus = df["SKU"].nunique()
 
-    m1, m2, m3 = st.columns(3)
+    st.session_state.report_data = {
+        "df":            df,
+        "total_cost":    total_cost,
+        "avg_daily":     avg_daily,
+        "total_locs":    total_locs,
+        "total_skus":    total_skus,
+        "snapshot_date": snapshot_date,
+        "filtered_rows": filtered_rows,
+        "num_days":      num_days,
+        "start_date":    start_date,
+        "end_date":      end_date,
+    }
+
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Cost (Date Range)", f"${total_cost:,.2f}")
-    m2.metric("Occupied Locations",      f"{total_locs:,}")
-    m3.metric("In Stock SKUs",           f"{total_skus:,}")
+    m2.metric("Avg Daily Cost",          f"${avg_daily:,.2f}")
+    m3.metric("Occupied Locations",      f"{total_locs:,}")
+    m4.metric("In Stock SKUs",           f"{total_skus:,}")
 
     st.markdown("---")
 
