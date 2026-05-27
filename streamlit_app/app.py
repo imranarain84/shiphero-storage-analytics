@@ -16,7 +16,7 @@ st.set_page_config(
     page_title = "Warehouse Storage Cost Report",
     page_icon  = os.path.join(os.path.dirname(__file__), "assets", "VP Warehouse Icon TP.png"),
     layout     = "wide",
-    initial_sidebar_state = "expanded",
+    initial_sidebar_state = "collapsed",
 )
 
 st.markdown("""
@@ -35,15 +35,25 @@ if "user" not in st.session_state:
 
 # ── Login screen ──────────────────────────────────────────────────────────────
 if not st.session_state.authenticated:
-    _, col, _ = st.columns([1, 1, 1])
+
+    # Hide sidebar completely on login page
+    st.markdown("""
+        <style>
+        [data-testid="stSidebar"] { display: none !important; }
+        section[data-testid="stSidebarContent"] { display: none !important; }
+        .stAppViewContainer { display: flex; justify-content: center; align-items: center; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    _, col, _ = st.columns([1, 1.2, 1])
     with col:
         vp_logo = os.path.join(os.path.dirname(__file__), "assets",
                                "VP Logo Horizontal Transparent White Lettering.png")
         if os.path.exists(vp_logo):
-            st.image(vp_logo, width=300)
+            st.image(vp_logo, use_container_width=True)
 
         st.markdown(
-            "<h2 style='text-align:center; margin-bottom:20px;'>Warehouse Storage Cost Report</h2>",
+            "<h2 style='text-align:center; margin-top:12px; margin-bottom:24px;'>Warehouse Storage Cost Report</h2>",
             unsafe_allow_html=True,
         )
 
@@ -69,7 +79,6 @@ available_dates = list_available_dates()
 latest_date     = available_dates[-1] if available_dates else str(date.today())
 all_customers   = get_all_customers(latest_date) if available_dates else []
 
-# Determine which customers this user can see
 if is_admin:
     allowed_customers = all_customers
 else:
@@ -85,7 +94,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Customer filter ───────────────────────────────────────────────────────
     if not allowed_customers:
         st.warning("No customers assigned to your account.")
         st.stop()
@@ -100,7 +108,6 @@ with st.sidebar:
             default = allowed_customers,
         )
 
-    # ── Tag filter ────────────────────────────────────────────────────────────
     @st.cache_data(ttl=3600)
     def get_tags_for_customers(snapshot_date: str, customers: tuple) -> list[str]:
         rows     = load_snapshot(snapshot_date)
@@ -126,7 +133,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Date range ────────────────────────────────────────────────────────────
     if available_dates:
         min_date = date.fromisoformat(available_dates[0])
         max_date = date.fromisoformat(available_dates[-1])
