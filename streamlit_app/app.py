@@ -64,7 +64,9 @@ if not st.session_state.authenticated:
         vp_logo = os.path.join(os.path.dirname(__file__), "assets",
                                "VP Logo Horizontal Transparent White Lettering.png")
         if os.path.exists(vp_logo):
+            st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
             st.image(vp_logo, width=210)
+            st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown(
             "<h2 style='text-align:center; margin-top:12px; margin-bottom:24px;'>ShipHero Storage Cost Analytics</h2>",
@@ -89,7 +91,7 @@ if not st.session_state.authenticated:
                 st.error("Incorrect email address or password.")
 
         st.markdown(
-            f"<p style='text-align:center; color:#666; font-size:11px; margin-top:40px;'>{APP_VERSION}</p>",
+            f"<p style='text-align:center; color:#666; font-size:11px; margin-top:40px;'>{APP_VERSION} | Vertical Passage Operations</p>",
             unsafe_allow_html=True,
         )
     st.stop()
