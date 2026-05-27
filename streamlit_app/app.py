@@ -219,11 +219,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    if available_dates:
-        st.markdown(f"🟢 **Last Pull:** {latest_date}")
-
-    st.markdown("---")
-
     generate = st.button("Generate Report", type="primary", use_container_width=True)
 
     st.markdown("---")
