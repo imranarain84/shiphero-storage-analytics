@@ -23,11 +23,11 @@ STORAGE_RATES = {
     "pallet small":                        0.5902,
     "wall - back":                         12.116,
     "wall - front":                        4.4096,
-    "pallite - 48":                        0.0572,
+    "pallite - 48":                        0.0357,  # corrected from rate card
     "pallite_16":                          0.0537,
     "pallite_36":                          0.0347,
-    "pallite_48":                          0.0572,
-    "palite_48":                           0.0572,
+    "pallite_48":                          0.0357,  # corrected from rate card
+    "palite_48":                           0.0357,  # typo variant
     "dt - pallet":                         2.2074,
     "dt-pallet":                           2.2074,
     "hd":                                  2.275,
