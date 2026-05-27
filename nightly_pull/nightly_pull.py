@@ -3,6 +3,9 @@ import json
 import gzip
 import boto3
 import pandas as pd
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import date
 from io import BytesIO
 
@@ -11,6 +14,11 @@ SPACES_SECRET   = os.environ["SPACES_SECRET"]
 SPACES_BUCKET   = os.environ["SPACES_BUCKET"]
 SPACES_REGION   = os.environ.get("SPACES_REGION", "nyc3")
 SPACES_ENDPOINT = f"https://{SPACES_REGION}.digitaloceanspaces.com"
+
+GMAIL_USER     = os.environ["GMAIL_USER"]
+GMAIL_APP_PASS = os.environ["GMAIL_APP_PASS"]
+
+NOTIFY_EMAILS  = ["imran@verticalpassage.com", "ryan@verticalpassage.com"]
 
 
 def _s3():
@@ -65,7 +73,7 @@ def csv_to_snapshot_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def upload_snapshot(rows: list[dict], snapshot_date: str):
+def upload_snapshot(rows: list[dict], snapshot_date: str) -> float:
     payload  = json.dumps(rows, default=str).encode("utf-8")
     gz_bytes = gzip.compress(payload)
     key      = f"inventory/{snapshot_date}.json.gz"
@@ -77,7 +85,58 @@ def upload_snapshot(rows: list[dict], snapshot_date: str):
         ContentType     = "application/json",
         ContentEncoding = "gzip",
     )
-    print(f"Uploaded {key} ({len(gz_bytes)/1024:.1f} KB, {len(rows):,} rows)")
+    size_kb = len(gz_bytes) / 1024
+    print(f"Uploaded {key} ({size_kb:.1f} KB, {len(rows):,} rows)")
+    return size_kb
+
+
+def send_summary_email(snapshot_date: str, row_count: int, size_kb: float, customers: list[str]):
+    print("Sending summary email...")
+
+    subject = f"✅ Warehouse Storage Snapshot Ready — {snapshot_date}"
+
+    body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; color: #333;">
+        <h2 style="color: #2c3e50;">Daily Inventory Snapshot — {snapshot_date}</h2>
+        <p>The daily ShipHero inventory report has been successfully downloaded and processed.</p>
+        <table style="border-collapse: collapse; width: 400px;">
+            <tr style="background-color: #f2f2f2;">
+                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Date</strong></td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{snapshot_date}</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Rows Processed</strong></td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{row_count:,}</td>
+            </tr>
+            <tr style="background-color: #f2f2f2;">
+                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Snapshot Size</strong></td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{size_kb:.1f} KB</td>
+            </tr>
+            <tr>
+                <td style="padding: 8px; border: 1px solid #ddd;"><strong>Customers</strong></td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{len(customers)}</td>
+            </tr>
+        </table>
+        <br>
+        <p style="color: #888; font-size: 12px;">
+            This is an automated message from the Vertical Passage Warehouse Storage Report system.
+        </p>
+    </body>
+    </html>
+    """
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = GMAIL_USER
+    msg["To"]      = ", ".join(NOTIFY_EMAILS)
+    msg.attach(MIMEText(body, "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(GMAIL_USER, GMAIL_APP_PASS)
+        server.sendmail(GMAIL_USER, NOTIFY_EMAILS, msg.as_string())
+
+    print(f"Summary email sent to {', '.join(NOTIFY_EMAILS)}")
 
 
 def main(args: dict = {}) -> dict:
@@ -90,8 +149,14 @@ def main(args: dict = {}) -> dict:
     df = df[df["Quantity"] > 0]
     print(f"{len(df):,} rows with quantity > 0")
 
-    rows = csv_to_snapshot_rows(df)
-    upload_snapshot(rows, today)
+    rows      = csv_to_snapshot_rows(df)
+    size_kb   = upload_snapshot(rows, today)
+    customers = sorted(set(r["customer"] for r in rows if r.get("customer")))
+
+    try:
+        send_summary_email(today, len(rows), size_kb, customers)
+    except Exception as e:
+        print(f"Warning: could not send summary email — {e}")
 
     summary = f"Done — {len(rows):,} rows for {today}"
     print(f"=== {summary} ===")
