@@ -18,14 +18,14 @@ STORAGE_RATES = {
     "pallet large":                        2.652,
     "pallet medium large":                 1.7914,
     "pallet medium small":                 1.443,
-    "pallet medium":                       2.7274,
+    "pallet medium":                       1.59,
     "pallet small large":                  0.9581,
     "pallet small":                        0.5902,
     "wall - back":                         12.116,
     "wall - front":                        4.4096,
     "pallite - 48":                        0.0572,
     "pallite_16":                          0.0537,
-    "pallite_36":                          0.0572,
+    "pallite_36":                          0.0347,
     "pallite_48":                          0.0572,
     "palite_48":                           0.0572,
     "dt - pallet":                         2.2074,
@@ -33,12 +33,17 @@ STORAGE_RATES = {
     "hd":                                  2.275,
     "jumbo receiving pallet":              3.90,
     "climate controlled storage room":     1.54,
-    "secure storage room":                 0.0,
+    "secure storage room":                 32.77,  # $983/month ÷ 30 days
     "no active bin":                       0.0,
 }
 
 
 def get_rate(storage_type: str) -> float:
+    """
+    Look up the daily rate for a storage type.
+    Normalizes by lowercasing and stripping whitespace so minor
+    capitalization differences and typos in ShipHero resolve correctly.
+    """
     if not storage_type:
         return 0.0
     return STORAGE_RATES.get(storage_type.strip().lower(), 0.0)
