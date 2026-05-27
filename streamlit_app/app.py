@@ -6,32 +6,84 @@ from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from logic.spaces     import list_available_dates, load_snapshot, load_date_range
+from logic.spaces     import (
+    list_available_dates, load_snapshot, load_date_range,
+    authenticate, get_all_customers,
+)
 from logic.calculator import calculate_costs
 
 st.set_page_config(
     page_title = "Warehouse Storage Cost Report",
     page_icon  = os.path.join(os.path.dirname(__file__), "assets", "VP Warehouse Icon TP.png"),
     layout     = "wide",
-    initial_sidebar_state = "expanded",
+    initial_sidebar_state = "collapsed",
 )
 
-# Hide image toolbar (expand/open buttons on images)
 st.markdown("""
     <style>
     [data-testid="stImage"] button { display: none !important; }
     [data-testid="stImageToolbar"] { display: none !important; }
+    [data-testid="stSidebarNav"] { display: none !important; }
     </style>
 """, unsafe_allow_html=True)
 
-@st.cache_data
-def load_loc_map():
-    csv_path = os.path.join(os.path.dirname(__file__), "data",
-                            "ShipHero - Location Names and Info.csv")
-    df = pd.read_csv(csv_path)
-    return dict(zip(df["Location"], df["Type"]))
+# ── Session state defaults ────────────────────────────────────────────────────
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "user" not in st.session_state:
+    st.session_state.user = None
 
-loc_type_map = load_loc_map()
+# ── Login screen ──────────────────────────────────────────────────────────────
+if not st.session_state.authenticated:
+
+    # Hide sidebar completely on login page
+    st.markdown("""
+        <style>
+        [data-testid="stSidebar"] { display: none !important; }
+        section[data-testid="stSidebarContent"] { display: none !important; }
+        .stAppViewContainer { display: flex; justify-content: center; align-items: center; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    _, col, _ = st.columns([1, 1.2, 1])
+    with col:
+        vp_logo = os.path.join(os.path.dirname(__file__), "assets",
+                               "VP Logo Horizontal Transparent White Lettering.png")
+        if os.path.exists(vp_logo):
+            st.image(vp_logo, use_container_width=True)
+
+        st.markdown(
+            "<h2 style='text-align:center; margin-top:12px; margin-bottom:24px;'>Warehouse Storage Cost Report</h2>",
+            unsafe_allow_html=True,
+        )
+
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Log In", type="primary", use_container_width=True):
+            user = authenticate(username, password)
+            if user:
+                st.session_state.authenticated = True
+                st.session_state.user          = user
+                st.session_state.username      = username.strip().lower()
+                st.rerun()
+            else:
+                st.error("Incorrect username or password.")
+    st.stop()
+
+# ── Logged in ─────────────────────────────────────────────────────────────────
+user     = st.session_state.user
+is_admin = user.get("is_admin", False)
+
+available_dates = list_available_dates()
+latest_date     = available_dates[-1] if available_dates else str(date.today())
+all_customers   = get_all_customers(latest_date) if available_dates else []
+
+if is_admin:
+    allowed_customers = all_customers
+else:
+    user_customers    = user.get("customers") or []
+    allowed_customers = [c for c in all_customers if c in user_customers]
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -42,22 +94,55 @@ with st.sidebar:
 
     st.markdown("---")
 
-    available_dates = list_available_dates()
+    if not allowed_customers:
+        st.warning("No customers assigned to your account.")
+        st.stop()
+
+    if len(allowed_customers) == 1:
+        selected_customers = allowed_customers
+        st.caption(f"Customer: **{allowed_customers[0]}**")
+    else:
+        selected_customers = st.multiselect(
+            "Filter by Customer",
+            options = allowed_customers,
+            default = allowed_customers,
+        )
+
+    @st.cache_data(ttl=3600)
+    def get_tags_for_customers(snapshot_date: str, customers: tuple) -> list[str]:
+        rows     = load_snapshot(snapshot_date)
+        cust_set = set(customers)
+        tags     = set()
+        for row in rows:
+            if row.get("customer") in cust_set:
+                for t in (row.get("tags") or []):
+                    if t:
+                        tags.add(t)
+        return sorted(tags)
+
+    if selected_customers:
+        all_tags = get_tags_for_customers(latest_date, tuple(sorted(selected_customers)))
+        selected_tags = st.multiselect(
+            "Filter by Product Tag (optional)",
+            options = all_tags,
+            default = [],
+            help    = "Leave blank to show all products",
+        )
+    else:
+        selected_tags = []
+
+    st.markdown("---")
 
     if available_dates:
-        min_date      = date.fromisoformat(available_dates[0])
-        max_date      = date.fromisoformat(available_dates[-1])
-        default_start = max_date - timedelta(days=30)
-        if default_start < min_date:
-            default_start = min_date
+        min_date = date.fromisoformat(available_dates[0])
+        max_date = date.fromisoformat(available_dates[-1])
     else:
-        min_date      = date.today()
-        max_date      = date.today()
-        default_start = date.today()
+        min_date = date.today()
+        max_date = date.today()
 
     start_date = st.date_input(
         "Start Date",
-        value     = default_start,
+        value     = min_date,
         min_value = min_date,
         max_value = max_date,
     )
@@ -69,13 +154,20 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.caption("🔒 [Admin Panel](/Admin)")
+
+    if is_admin:
+        st.caption("🔒 [Admin Panel](/Admin)")
+
+    if st.button("Log Out", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.user          = None
+        st.rerun()
 
 # ── Header ────────────────────────────────────────────────────────────────────
-vp_logo = os.path.join(os.path.dirname(__file__), "assets",
-                       "VP Logo Horizontal Transparent White Lettering.png")
 _, col_center, _ = st.columns([1, 2, 1])
 with col_center:
+    vp_logo = os.path.join(os.path.dirname(__file__), "assets",
+                           "VP Logo Horizontal Transparent White Lettering.png")
     if os.path.exists(vp_logo):
         st.image(vp_logo, width=300)
     st.markdown(
@@ -88,37 +180,19 @@ st.markdown("---")
 if not available_dates:
     st.warning(
         "No inventory snapshots found yet. "
-        "The nightly pull runs at 11pm — check back after the first run."
+        "The daily pipeline runs at 6am — check back after the first run."
     )
     st.stop()
 
-@st.cache_data(ttl=3600)
-def get_all_tags(snapshot_date: str) -> list[str]:
-    rows = load_snapshot(snapshot_date)
-    tags = set()
-    for row in rows:
-        for t in (row.get("tags") or []):
-            if t:
-                tags.add(t)
-    return sorted(tags)
-
-latest_date = available_dates[-1]
-all_tags    = get_all_tags(latest_date)
-
-selected_tags = st.multiselect(
-    "Filter by Client / Brand Tag",
-    options = all_tags,
-    default = all_tags[:3] if all_tags else [],
-    help    = "Show only products that have at least one of the selected tags",
-)
-
+# ── Generate Report ───────────────────────────────────────────────────────────
 if st.button("🚀 Generate Report", type="primary"):
 
-    if not selected_tags:
-        st.warning("Please select at least one tag.")
+    if not selected_customers:
+        st.warning("Please select at least one customer.")
         st.stop()
 
     num_days = max((end_date - start_date).days, 1)
+    cust_set = set(selected_customers)
     tag_set  = set(selected_tags)
 
     with st.spinner("Loading inventory snapshot..."):
@@ -134,13 +208,16 @@ if st.button("🚀 Generate Report", type="primary"):
     snapshot_date = max(snapshots.keys())
     rows          = snapshots[snapshot_date]
 
-    filtered_rows = [
-        r for r in rows
-        if tag_set.intersection(set(r.get("tags") or []))
-    ]
+    filtered_rows = [r for r in rows if r.get("customer") in cust_set]
+
+    if tag_set:
+        filtered_rows = [
+            r for r in filtered_rows
+            if tag_set.intersection(set(r.get("tags") or []))
+        ]
 
     if not filtered_rows:
-        st.warning("No inventory rows match the selected tags in this date range.")
+        st.warning("No inventory rows match the selected filters.")
         st.stop()
 
     st.caption(
@@ -149,13 +226,13 @@ if st.button("🚀 Generate Report", type="primary"):
         f"{num_days} day(s)"
     )
 
-    df         = calculate_costs(filtered_rows, num_days, loc_type_map)
+    df         = calculate_costs(filtered_rows, num_days)
     total_cost = df["Total Cost"].sum()
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("💰 Total Period Cost",  f"${total_cost:,.2f}")
-    m2.metric("📦 Total SKUs",         f"{df['SKU'].nunique():,}")
-    m3.metric("📍 Total Locations",    f"{(df['Location'] != 'No Active Bin').sum():,}")
+    m1.metric("💰 Total Period Cost", f"${total_cost:,.2f}")
+    m2.metric("📦 Total SKUs",        f"{df['SKU'].nunique():,}")
+    m3.metric("📍 Total Locations",   f"{(df['Location'] != 'No Active Bin').sum():,}")
 
     st.markdown("---")
 
