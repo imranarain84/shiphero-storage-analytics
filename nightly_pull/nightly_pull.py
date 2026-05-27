@@ -65,8 +65,8 @@ def csv_to_snapshot_rows(df: pd.DataFrame) -> list[dict]:
             "product_name":  str(row.get("Product Name", "")).strip(),
             "tags":          tags,
             "customer":      str(row.get("3PL Customer", "")).strip(),
-            "location_name": str(row.get("Bin/Location Name", "")).strip() or None,
-            "storage_type":  str(row.get("Storage Location Type", "")).strip() or None,
+            "location_name": None if pd.isna(row.get("Bin/Location Name")) or str(row.get("Bin/Location Name", "")).strip() in ("", "nan") else str(row.get("Bin/Location Name", "")).strip(),
+            "storage_type":  None if pd.isna(row.get("Storage Location Type")) or str(row.get("Storage Location Type", "")).strip() in ("", "nan") else str(row.get("Storage Location Type", "")).strip(),
             "quantity":      int(row.get("Quantity", 0) or 0),
             "warehouse":     str(row.get("Warehouse Name", "")).strip(),
         })
