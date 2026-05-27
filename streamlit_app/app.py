@@ -67,7 +67,7 @@ if not st.session_state.authenticated:
             unsafe_allow_html=True,
         )
 
-        username = st.text_input("Username")
+        username = st.text_input("Email Address")
         password = st.text_input("Password", type="password")
 
         if st.button("Log In", type="primary", use_container_width=True):
