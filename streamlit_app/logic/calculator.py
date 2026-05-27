@@ -10,6 +10,10 @@ def is_receiving_location(location_name: str) -> bool:
 
 
 def calculate_costs(rows: list[dict], num_days: int) -> pd.DataFrame:
+    """
+    Calculate storage costs from snapshot rows.
+    Rates are charged per occupied location, not per unit quantity.
+    """
     records = []
     for row in rows:
         storage_type  = row.get("storage_type") or "No Active Bin"
@@ -21,7 +25,8 @@ def calculate_costs(rows: list[dict], num_days: int) -> pd.DataFrame:
         else:
             rate = get_rate(storage_type)
 
-        cost = rate * qty * num_days
+        # Charge per location occupied, not per unit
+        cost = rate * num_days
 
         records.append({
             "SKU":          row.get("sku", ""),
