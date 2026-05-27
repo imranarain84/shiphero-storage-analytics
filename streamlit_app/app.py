@@ -60,7 +60,7 @@ if not st.session_state.authenticated:
         vp_logo = os.path.join(os.path.dirname(__file__), "assets",
                                "VP Logo Horizontal Transparent White Lettering.png")
         if os.path.exists(vp_logo):
-            st.image(vp_logo, use_container_width=True)
+            st.image(vp_logo, width=210)
 
         st.markdown(
             "<h2 style='text-align:center; margin-top:12px; margin-bottom:24px;'>Warehouse Storage Cost Report</h2>",
