@@ -173,19 +173,19 @@ with st.sidebar:
         st.warning("No customers assigned to your account.")
         st.stop()
 
-    st.markdown("**Warehouse**")
-    warehouses          = ["VP North", "VP South"]
-    selected_warehouses = []
-    for wh in warehouses:
-        if st.checkbox(wh, value=True, key=f"wh_{wh}"):
-            selected_warehouses.append(wh)
+    with st.expander("Warehouse", expanded=True):
+        warehouses          = ["VP North", "VP South"]
+        selected_warehouses = []
+        for wh in warehouses:
+            if st.checkbox(wh, value=True, key=f"wh_{wh}"):
+                selected_warehouses.append(wh)
 
     if len(allowed_customers) > 1:
-        st.markdown("**Customer**")
-        selected_customers = []
-        for customer in allowed_customers:
-            if st.checkbox(customer, key=f"cust_{customer}"):
-                selected_customers.append(customer)
+        with st.expander("Customer", expanded=True):
+            selected_customers = []
+            for customer in allowed_customers:
+                if st.checkbox(customer, key=f"cust_{customer}"):
+                    selected_customers.append(customer)
     else:
         selected_customers = allowed_customers
 
