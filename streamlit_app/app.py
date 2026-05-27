@@ -64,9 +64,13 @@ if not st.session_state.authenticated:
         vp_logo = os.path.join(os.path.dirname(__file__), "assets",
                                "VP Logo Horizontal Transparent White Lettering.png")
         if os.path.exists(vp_logo):
-            st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-            st.image(vp_logo, width=210)
-            st.markdown("</div>", unsafe_allow_html=True)
+            import base64
+            with open(vp_logo, "rb") as img_file:
+                b64 = base64.b64encode(img_file.read()).decode()
+            st.markdown(
+                f"<div style='text-align:center;'><img src='data:image/png;base64,{b64}' width='210'/></div>",
+                unsafe_allow_html=True,
+            )
 
         st.markdown(
             "<h2 style='text-align:center; margin-top:12px; margin-bottom:24px;'>ShipHero Storage Cost Analytics</h2>",
