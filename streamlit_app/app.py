@@ -174,7 +174,7 @@ with st.sidebar:
         st.stop()
 
     with st.expander("Warehouse", expanded=True):
-        warehouses          = ["Primary", "VP North", "VP South"]
+        warehouses          = ["Primary", "VP North"]
         selected_warehouses = []
         for wh in warehouses:
             if st.checkbox(wh, value=True, key=f"wh_{wh}"):
