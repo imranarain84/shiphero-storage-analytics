@@ -11,6 +11,7 @@ from logic.spaces     import (
     authenticate, get_all_customers,
 )
 from logic.calculator import calculate_costs
+from logic.auth       import make_token, verify_token
 
 st.set_page_config(
     page_title = "Warehouse Storage Cost Report",
@@ -26,6 +27,20 @@ st.markdown("""
     [data-testid="stSidebarNav"] { display: none !important; }
     </style>
 """, unsafe_allow_html=True)
+
+# ── Session restore from query params ─────────────────────────────────────────
+params = st.query_params
+if not st.session_state.get("authenticated"):
+    token    = params.get("token", "")
+    username = params.get("u", "")
+    if token and username and verify_token(username, token):
+        from logic.spaces import load_users
+        users = load_users()
+        user  = users.get(username)
+        if user:
+            st.session_state.authenticated = True
+            st.session_state.user          = user
+            st.session_state.username      = username
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -58,9 +73,13 @@ if not st.session_state.authenticated:
         if st.button("Log In", type="primary", use_container_width=True):
             user = authenticate(username, password)
             if user:
+                uname = username.strip().lower()
+                token = make_token(uname)
                 st.session_state.authenticated = True
                 st.session_state.user          = user
-                st.session_state.username      = username.strip().lower()
+                st.session_state.username      = uname
+                st.query_params["u"]     = uname
+                st.query_params["token"] = token
                 st.rerun()
             else:
                 st.error("Incorrect username or password.")
@@ -93,17 +112,12 @@ with st.sidebar:
         st.warning("No customers assigned to your account.")
         st.stop()
 
-    # Customer filter — no default selection, dropdown style
-    if len(allowed_customers) == 1:
-        selected_customers = allowed_customers
-        st.caption(f"Customer: **{allowed_customers[0]}**")
-    else:
-        selected_customers = st.multiselect(
-            "Filter by Customer",
-            options     = allowed_customers,
-            default     = [],
-            placeholder = "Select customer(s)...",
-        )
+    # Customer filter — checkboxes
+    st.markdown("**Filter by Customer**")
+    selected_customers = []
+    for customer in allowed_customers:
+        if st.checkbox(customer, key=f"cust_{customer}"):
+            selected_customers.append(customer)
 
     # Tag filter
     @st.cache_data(ttl=3600)
@@ -119,6 +133,7 @@ with st.sidebar:
         return sorted(tags)
 
     if selected_customers:
+        st.markdown("---")
         all_tags = get_tags_for_customers(latest_date, tuple(sorted(selected_customers)))
         selected_tags = st.multiselect(
             "Filter by Product Tag (optional)",
@@ -154,17 +169,19 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Generate report button in sidebar
     generate = st.button("🚀 Generate Report", type="primary", use_container_width=True)
 
     st.markdown("---")
 
     if is_admin:
-        st.caption("🔒 [Admin Panel](/Admin)")
+        token = make_token(st.session_state.username)
+        admin_url = f"/Admin?u={st.session_state.username}&token={token}"
+        st.markdown(f"🔒 [Admin Panel]({admin_url})")
 
     if st.button("Log Out", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.user          = None
+        st.query_params.clear()
         st.rerun()
 
 # ── Header ────────────────────────────────────────────────────────────────────
