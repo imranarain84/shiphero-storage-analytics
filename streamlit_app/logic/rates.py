@@ -1,33 +1,49 @@
+# Daily storage rates per location per day.
+# Keys are LOWERCASED and STRIPPED — normalization happens in get_rate().
+# This means Pallet TALL, Pallet Tall, pallet tall all resolve correctly.
+
 STORAGE_RATES = {
-    "Pallet":                              2.093,
-    "Standard Bin":                        0.0442,
-    "Bin":                                 0.0442,
-    "Half Pallet":                         1.0472,
-    "Tractor Trailer Load Floor Storage":  52.00,
-    "Blue Bin Large":                      0.2925,
-    "Blue Bin Medium":                     0.1462,
-    "Blue Bin Small":                      0.0488,
-    "Gray Bin Small":                      0.1846,
-    "Gray Bin Medium":                     0.2275,
-    "Gray Bin Large":                      0.325,
-    "Pallet Tall":                         2.7274,
-    "Pallet Large":                        2.652,
-    "Pallet Medium Large":                 1.7914,
-    "Pallet Medium Small":                 1.443,
-    "Pallet Small Large":                  0.9581,
-    "Pallet Small":                        0.5902,
-    "Wall - Back":                         12.116,
-    "Wall - Front":                        4.4096,
-    "Pallite - 48":                        0.0572,
-    "Pallite_16":                          0.0537,
-    "Pallite_48":                          0.0357,
-    "DT - Pallet":                         2.2074,
-    "DT-Pallet":                           2.2074,
-    "HD":                                  2.275,
-    "Jumbo Receiving Pallet":              3.90,
-    "No Active Bin":                       0.0,
+    "pallet":                              2.093,
+    "standard bin":                        0.0442,
+    "bin":                                 0.0442,
+    "half pallet":                         1.0472,
+    "tractor trailer load floor storage":  52.00,
+    "blue bin large":                      0.2925,
+    "blue bin medium":                     0.1462,
+    "blue bin small":                      0.0488,
+    "gray bin small":                      0.1846,
+    "gray bin medium":                     0.2275,
+    "gray bin large":                      0.325,
+    "pallet tall":                         2.7274,
+    "pallet large":                        2.652,
+    "pallet medium large":                 1.7914,
+    "pallet medium small":                 1.443,
+    "pallet medium":                       1.59,
+    "pallet small large":                  0.9581,
+    "pallet small":                        0.5902,
+    "wall - back":                         12.116,
+    "wall - front":                        4.4096,
+    "pallite - 48":                        0.0572,
+    "pallite_16":                          0.0537,
+    "pallite_36":                          0.0347,
+    "pallite_48":                          0.0572,
+    "palite_48":                           0.0572,
+    "dt - pallet":                         2.2074,
+    "dt-pallet":                           2.2074,
+    "hd":                                  2.275,
+    "jumbo receiving pallet":              3.90,
+    "climate controlled storage room":     1.54,
+    "secure storage room":                 32.77,  # $983/month ÷ 30 days
+    "no active bin":                       0.0,
 }
 
 
 def get_rate(storage_type: str) -> float:
-    return STORAGE_RATES.get(storage_type, 0.0)
+    """
+    Look up the daily rate for a storage type.
+    Normalizes by lowercasing and stripping whitespace so minor
+    capitalization differences and typos in ShipHero resolve correctly.
+    """
+    if not storage_type:
+        return 0.0
+    return STORAGE_RATES.get(storage_type.strip().lower(), 0.0)
