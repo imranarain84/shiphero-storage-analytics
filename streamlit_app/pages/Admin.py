@@ -14,9 +14,21 @@ st.set_page_config(
     initial_sidebar_state = "collapsed",
 )
 
+st.markdown("""
+    <style>
+    [data-testid="stSidebarNav"] { display: none !important; }
+    </style>
+""", unsafe_allow_html=True)
+
 # ── Auth check ────────────────────────────────────────────────────────────────
-if not st.session_state.get("authenticated") or not st.session_state.get("user", {}).get("is_admin"):
-    st.error("Access denied. Please log in as an admin.")
+if not st.session_state.get("authenticated"):
+    st.error("Access denied. Please log in first.")
+    if st.button("Go to Login"):
+        st.switch_page("app.py")
+    st.stop()
+
+if not st.session_state.get("user", {}).get("is_admin"):
+    st.error("Access denied. Admin privileges required.")
     st.stop()
 
 st.markdown("## ⚙️ Admin Panel")
@@ -27,8 +39,7 @@ if st.button("← Back to Report"):
 st.markdown("---")
 
 # ── Load data ─────────────────────────────────────────────────────────────────
-users = load_users()
-
+users           = load_users()
 available_dates = list_available_dates()
 all_customers   = get_all_customers(available_dates[-1]) if available_dates else []
 
@@ -39,7 +50,7 @@ if users:
     for username, info in sorted(users.items()):
         with st.expander(
             f"{'🔑 ' if info.get('is_admin') else '👤 '}{username}"
-            + (" — Admin" if info.get("is_admin") else f" — {', '.join(info.get('customers') or ['All']) if info.get('is_admin') else ', '.join(info.get('customers') or ['None'])}")
+            + (" — Admin" if info.get("is_admin") else f" — {', '.join(info.get('customers') or ['None assigned'])}")
         ):
             col_info, col_delete = st.columns([4, 1])
 
@@ -63,7 +74,6 @@ if users:
                 else:
                     st.caption("(you)")
 
-            # Edit customers
             if not info.get("is_admin"):
                 new_customers = st.multiselect(
                     "Update customer access",

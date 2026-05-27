@@ -27,7 +27,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ── Session state defaults ────────────────────────────────────────────────────
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "user" not in st.session_state:
@@ -35,13 +34,9 @@ if "user" not in st.session_state:
 
 # ── Login screen ──────────────────────────────────────────────────────────────
 if not st.session_state.authenticated:
-
-    # Hide sidebar completely on login page
     st.markdown("""
         <style>
         [data-testid="stSidebar"] { display: none !important; }
-        section[data-testid="stSidebarContent"] { display: none !important; }
-        .stAppViewContainer { display: flex; justify-content: center; align-items: center; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -98,16 +93,19 @@ with st.sidebar:
         st.warning("No customers assigned to your account.")
         st.stop()
 
+    # Customer filter — no default selection, dropdown style
     if len(allowed_customers) == 1:
         selected_customers = allowed_customers
         st.caption(f"Customer: **{allowed_customers[0]}**")
     else:
         selected_customers = st.multiselect(
             "Filter by Customer",
-            options = allowed_customers,
-            default = allowed_customers,
+            options     = allowed_customers,
+            default     = [],
+            placeholder = "Select customer(s)...",
         )
 
+    # Tag filter
     @st.cache_data(ttl=3600)
     def get_tags_for_customers(snapshot_date: str, customers: tuple) -> list[str]:
         rows     = load_snapshot(snapshot_date)
@@ -124,9 +122,10 @@ with st.sidebar:
         all_tags = get_tags_for_customers(latest_date, tuple(sorted(selected_customers)))
         selected_tags = st.multiselect(
             "Filter by Product Tag (optional)",
-            options = all_tags,
-            default = [],
-            help    = "Leave blank to show all products",
+            options     = all_tags,
+            default     = [],
+            placeholder = "Select tag(s)...",
+            help        = "Leave blank to show all products",
         )
     else:
         selected_tags = []
@@ -152,6 +151,11 @@ with st.sidebar:
         min_value = min_date,
         max_value = max_date,
     )
+
+    st.markdown("---")
+
+    # Generate report button in sidebar
+    generate = st.button("🚀 Generate Report", type="primary", use_container_width=True)
 
     st.markdown("---")
 
@@ -185,7 +189,7 @@ if not available_dates:
     st.stop()
 
 # ── Generate Report ───────────────────────────────────────────────────────────
-if st.button("🚀 Generate Report", type="primary"):
+if generate:
 
     if not selected_customers:
         st.warning("Please select at least one customer.")
