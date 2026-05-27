@@ -49,6 +49,9 @@ if st.button("← Back to Report"):
 st.markdown("---")
 
 available_dates = list_available_dates()
+if available_dates:
+    st.markdown(f"🟢 **Last Pull:** {available_dates[-1]}")
+    st.markdown("---")
 all_customers   = get_all_customers(available_dates[-1]) if available_dates else []
 
 # ── User list ─────────────────────────────────────────────────────────────────
