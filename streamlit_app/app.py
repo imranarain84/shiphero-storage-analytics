@@ -13,11 +13,13 @@ from logic.spaces     import (
 from logic.calculator import calculate_costs
 from logic.auth       import make_token, verify_token
 
+APP_VERSION = "v1.0"
+
 st.set_page_config(
-    page_title = "Warehouse Storage Cost Report",
+    page_title = "ShipHero Storage Cost Analytics",
     page_icon  = os.path.join(os.path.dirname(__file__), "assets", "VP Warehouse Icon TP.png"),
     layout     = "wide",
-    initial_sidebar_state = "collapsed",
+    initial_sidebar_state = "expanded",
 )
 
 st.markdown("""
@@ -25,6 +27,8 @@ st.markdown("""
     [data-testid="stImage"] button { display: none !important; }
     [data-testid="stImageToolbar"] { display: none !important; }
     [data-testid="stSidebarNav"] { display: none !important; }
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    [data-testid="stMetricValue"] { font-size: 2rem !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -63,7 +67,7 @@ if not st.session_state.authenticated:
             st.image(vp_logo, width=210)
 
         st.markdown(
-            "<h2 style='text-align:center; margin-top:12px; margin-bottom:24px;'>Warehouse Storage Cost Report</h2>",
+            "<h2 style='text-align:center; margin-top:12px; margin-bottom:24px;'>ShipHero Storage Cost Analytics</h2>",
             unsafe_allow_html=True,
         )
 
@@ -82,7 +86,12 @@ if not st.session_state.authenticated:
                 st.query_params["token"] = token
                 st.rerun()
             else:
-                st.error("Incorrect username or password.")
+                st.error("Incorrect email address or password.")
+
+        st.markdown(
+            f"<p style='text-align:center; color:#666; font-size:11px; margin-top:40px;'>{APP_VERSION}</p>",
+            unsafe_allow_html=True,
+        )
     st.stop()
 
 # ── Logged in ─────────────────────────────────────────────────────────────────
@@ -104,22 +113,76 @@ with st.sidebar:
     logo_path = os.path.join(os.path.dirname(__file__), "assets",
                              "VP Logo Horizontal Transparent White Lettering.png")
     if os.path.exists(logo_path):
-        st.image(logo_path, width=200)
+        st.image(logo_path, width=180)
+
+    st.markdown("### Storage Analytics")
+
+    if len(allowed_customers) == 1:
+        st.caption(f"{allowed_customers[0]} · VP Fulfillment")
+    elif allowed_customers:
+        st.caption(f"{len(allowed_customers)} customers · VP Fulfillment")
 
     st.markdown("---")
+
+    # ── Date Range ────────────────────────────────────────────────────────────
+    st.markdown("**Date Range**")
+    st.markdown("**View**")
+
+    date_mode = st.radio(
+        "date_mode",
+        options          = ["Today", "Select Date Range"],
+        label_visibility = "collapsed",
+    )
+
+    if available_dates:
+        min_date = date.fromisoformat(available_dates[0])
+        max_date = date.fromisoformat(available_dates[-1])
+    else:
+        min_date = date.today()
+        max_date = date.today()
+
+    if date_mode == "Today":
+        start_date = max_date
+        end_date   = max_date
+    else:
+        start_date = st.date_input(
+            "Start Date",
+            value     = min_date,
+            min_value = min_date,
+            max_value = max_date,
+        )
+        end_date = st.date_input(
+            "End Date",
+            value     = max_date,
+            min_value = min_date,
+            max_value = max_date,
+        )
+
+    st.markdown("---")
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    st.markdown("**Filters**")
 
     if not allowed_customers:
         st.warning("No customers assigned to your account.")
         st.stop()
 
-    # Customer filter — checkboxes
-    st.markdown("**Filter by Customer**")
-    selected_customers = []
-    for customer in allowed_customers:
-        if st.checkbox(customer, key=f"cust_{customer}"):
-            selected_customers.append(customer)
+    st.markdown("**Warehouse**")
+    warehouses          = ["VP North", "VP South"]
+    selected_warehouses = []
+    for wh in warehouses:
+        if st.checkbox(wh, value=True, key=f"wh_{wh}"):
+            selected_warehouses.append(wh)
 
-    # Tag filter
+    if len(allowed_customers) > 1:
+        st.markdown("**Customer**")
+        selected_customers = []
+        for customer in allowed_customers:
+            if st.checkbox(customer, key=f"cust_{customer}"):
+                selected_customers.append(customer)
+    else:
+        selected_customers = allowed_customers
+
     @st.cache_data(ttl=3600)
     def get_tags_for_customers(snapshot_date: str, customers: tuple) -> list[str]:
         rows     = load_snapshot(snapshot_date)
@@ -133,76 +196,57 @@ with st.sidebar:
         return sorted(tags)
 
     if selected_customers:
-        st.markdown("---")
         all_tags = get_tags_for_customers(latest_date, tuple(sorted(selected_customers)))
-        selected_tags = st.multiselect(
-            "Filter by Product Tag (optional)",
-            options     = all_tags,
-            default     = [],
-            placeholder = "Select tag(s)...",
-            help        = "Leave blank to show all products",
-        )
+        if all_tags:
+            st.markdown("**Product Tag**")
+            selected_tags = st.multiselect(
+                "tag_filter",
+                options          = all_tags,
+                default          = [],
+                placeholder      = "All tags",
+                label_visibility = "collapsed",
+            )
+        else:
+            selected_tags = []
     else:
         selected_tags = []
 
     st.markdown("---")
 
     if available_dates:
-        min_date = date.fromisoformat(available_dates[0])
-        max_date = date.fromisoformat(available_dates[-1])
-    else:
-        min_date = date.today()
-        max_date = date.today()
-
-    start_date = st.date_input(
-        "Start Date",
-        value     = min_date,
-        min_value = min_date,
-        max_value = max_date,
-    )
-    end_date = st.date_input(
-        "End Date",
-        value     = max_date,
-        min_value = min_date,
-        max_value = max_date,
-    )
+        st.markdown(f"🟢 **Last Pull:** {latest_date}")
 
     st.markdown("---")
 
-    generate = st.button("🚀 Generate Report", type="primary", use_container_width=True)
+    generate = st.button("Generate Report", type="primary", use_container_width=True)
 
     st.markdown("---")
 
     if is_admin:
-        token = make_token(st.session_state.username)
+        token     = make_token(st.session_state.username)
         admin_url = f"/Admin?u={st.session_state.username}&token={token}"
         st.markdown(f"🔒 [Admin Panel]({admin_url})")
 
-    if st.button("Log Out", use_container_width=True):
+    if st.button("Sign Out", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.user          = None
         st.query_params.clear()
         st.rerun()
 
-# ── Header ────────────────────────────────────────────────────────────────────
-_, col_center, _ = st.columns([1, 2, 1])
-with col_center:
-    vp_logo = os.path.join(os.path.dirname(__file__), "assets",
-                           "VP Logo Horizontal Transparent White Lettering.png")
-    if os.path.exists(vp_logo):
-        st.image(vp_logo, width=300)
     st.markdown(
-        "<h1 style='text-align:center; margin-top:8px; margin-bottom:4px;'>Warehouse Storage Cost Report</h1>",
+        f"<p style='text-align:center; color:#444; font-size:11px; margin-top:20px;'>{APP_VERSION}</p>",
         unsafe_allow_html=True,
     )
 
+# ── Main content ──────────────────────────────────────────────────────────────
+st.markdown(
+    "<h1 style='text-align:center; margin-bottom:8px;'>ShipHero Storage Cost Analytics</h1>",
+    unsafe_allow_html=True,
+)
 st.markdown("---")
 
 if not available_dates:
-    st.warning(
-        "No inventory snapshots found yet. "
-        "The daily pipeline runs at 6am — check back after the first run."
-    )
+    st.warning("No inventory snapshots found yet. The daily pipeline runs at 6am.")
     st.stop()
 
 # ── Generate Report ───────────────────────────────────────────────────────────
@@ -212,24 +256,28 @@ if generate:
         st.warning("Please select at least one customer.")
         st.stop()
 
-    num_days = max((end_date - start_date).days, 1)
+    num_days = max((end_date - start_date).days + 1, 1)
     cust_set = set(selected_customers)
     tag_set  = set(selected_tags)
+    wh_set   = set(selected_warehouses)
 
     with st.spinner("Loading inventory snapshot..."):
         snapshots = load_date_range(str(start_date), str(end_date))
 
     if not snapshots:
-        st.error(
-            f"No snapshots available between {start_date} and {end_date}. "
-            "Try widening your date range."
-        )
+        st.error(f"No snapshots available between {start_date} and {end_date}.")
         st.stop()
 
     snapshot_date = max(snapshots.keys())
     rows          = snapshots[snapshot_date]
 
     filtered_rows = [r for r in rows if r.get("customer") in cust_set]
+
+    if selected_warehouses:
+        filtered_rows = [
+            r for r in filtered_rows
+            if any(wh.lower() in (r.get("warehouse") or "").lower() for wh in wh_set)
+        ]
 
     if tag_set:
         filtered_rows = [
@@ -241,25 +289,60 @@ if generate:
         st.warning("No inventory rows match the selected filters.")
         st.stop()
 
-    st.caption(
-        f"Snapshot date: **{snapshot_date}** · "
-        f"{len(filtered_rows):,} rows matched · "
-        f"{num_days} day(s)"
-    )
-
     df         = calculate_costs(filtered_rows, num_days)
     total_cost = df["Total Cost"].sum()
+    total_locs = (df["Location"] != "No Active Bin").sum()
+    total_skus = df["SKU"].nunique()
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("💰 Total Period Cost", f"${total_cost:,.2f}")
-    m2.metric("📦 Total SKUs",        f"{df['SKU'].nunique():,}")
-    m3.metric("📍 Total Locations",   f"{(df['Location'] != 'No Active Bin').sum():,}")
+    m1.metric("Total Cost (Date Range)", f"${total_cost:,.2f}")
+    m2.metric("Occupied Locations",      f"{total_locs:,}")
+    m3.metric("In Stock SKUs",           f"{total_skus:,}")
 
     st.markdown("---")
+
+    st.markdown("### Cost By Location Type")
+
+    loc_summary = (
+        df[df["Location"] != "No Active Bin"]
+        .groupby("Storage Type")
+        .agg(
+            Occupied_Locations = ("Location", "count"),
+            Unique_SKUs        = ("SKU", "nunique"),
+            Total_Daily_Cost   = ("Total Cost", "sum"),
+        )
+        .reset_index()
+        .sort_values("Total_Daily_Cost", ascending=False)
+        .rename(columns={
+            "Storage Type":       "Location Type",
+            "Occupied_Locations": "Occupied Locations",
+            "Unique_SKUs":        "Unique SKUs",
+            "Total_Daily_Cost":   "Total Daily Cost",
+        })
+    )
+    loc_summary["Total Daily Cost"] = loc_summary["Total Daily Cost"].apply(lambda x: f"${x:,.2f}")
+    st.dataframe(loc_summary, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    st.markdown("### Product Detail")
+
+    search = st.text_input(
+        "Search By SKU Or Product Name",
+        placeholder = "e.g. UNI-1234 or plush",
+    )
 
     display_df = df.copy()
     display_df["Daily Rate"] = display_df["Daily Rate"].apply(lambda x: f"${x:.4f}")
     display_df["Total Cost"] = display_df["Total Cost"].apply(lambda x: f"${x:,.2f}")
+
+    if search.strip():
+        mask = (
+            display_df["SKU"].str.contains(search.strip(), case=False, na=False) |
+            display_df["Product Name"].str.contains(search.strip(), case=False, na=False)
+        )
+        display_df = display_df[mask]
+        st.caption(f"{len(display_df):,} results for '{search.strip()}'")
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
@@ -269,4 +352,12 @@ if generate:
         data      = csv,
         file_name = f"storage_report_{start_date}_to_{end_date}.csv",
         mime      = "text/csv",
+    )
+
+    st.markdown("---")
+    st.markdown(
+        f"<p style='text-align:center; color:#444; font-size:11px;'>"
+        f"Snapshot: {snapshot_date} · {len(filtered_rows):,} rows · {num_days} day(s) · {APP_VERSION}"
+        f"</p>",
+        unsafe_allow_html=True,
     )
