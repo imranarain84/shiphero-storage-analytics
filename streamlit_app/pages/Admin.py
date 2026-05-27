@@ -6,147 +6,133 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from logic.spaces import load_tracked_tags, save_tracked_tags
+from logic.spaces import load_users, save_users, get_all_customers, list_available_dates
 
 st.set_page_config(
-    page_title = "Admin — Tag Manager",
+    page_title = "Admin Panel",
     layout     = "centered",
     initial_sidebar_state = "collapsed",
 )
 
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "changeme")
+st.markdown("""
+    <style>
+    [data-testid="stSidebarNav"] { display: none !important; }
+    </style>
+""", unsafe_allow_html=True)
 
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-
-if not st.session_state.authenticated:
-    st.markdown("## 🔒 Admin Login")
-    pwd = st.text_input("Password", type="password")
-    if st.button("Log In"):
-        if pwd == ADMIN_PASSWORD:
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Incorrect password.")
+# ── Auth check ────────────────────────────────────────────────────────────────
+if not st.session_state.get("authenticated"):
+    st.error("Access denied. Please log in first.")
+    if st.button("Go to Login"):
+        st.switch_page("app.py")
     st.stop()
 
-st.markdown("## ⚙️ Tag Manager")
-st.caption(
-    "These are the product tags the nightly ShipHero pull searches for. "
-    "Any product that has **at least one** of these tags will be included "
-    "in the nightly snapshot."
-)
+if not st.session_state.get("user", {}).get("is_admin"):
+    st.error("Access denied. Admin privileges required.")
+    st.stop()
 
-if st.button("🔓 Log Out", type="secondary"):
-    st.session_state.authenticated = False
-    st.rerun()
+st.markdown("## ⚙️ Admin Panel")
+
+if st.button("← Back to Report"):
+    st.switch_page("app.py")
 
 st.markdown("---")
 
-config       = load_tracked_tags()
-current_tags = config.get("tags", [])
-last_mod     = config.get("last_modified")
-last_by      = config.get("last_modified_by")
+# ── Load data ─────────────────────────────────────────────────────────────────
+users           = load_users()
+available_dates = list_available_dates()
+all_customers   = get_all_customers(available_dates[-1]) if available_dates else []
 
-if last_mod:
-    try:
-        ts = datetime.fromisoformat(last_mod).strftime("%B %d, %Y at %I:%M %p UTC")
-    except Exception:
-        ts = last_mod
-    st.caption(f"Last updated: **{ts}** by `{last_by}`")
+# ── User list ─────────────────────────────────────────────────────────────────
+st.markdown(f"### Users ({len(users)})")
 
-st.markdown(f"### Current Tags ({len(current_tags)})")
+if users:
+    for username, info in sorted(users.items()):
+        with st.expander(
+            f"{'🔑 ' if info.get('is_admin') else '👤 '}{username}"
+            + (" — Admin" if info.get("is_admin") else f" — {', '.join(info.get('customers') or ['None assigned'])}")
+        ):
+            col_info, col_delete = st.columns([4, 1])
 
-if current_tags:
-    for tag in sorted(current_tags):
-        col_tag, col_btn = st.columns([5, 1])
-        col_tag.markdown(f"🏷️ &nbsp; `{tag}`", unsafe_allow_html=True)
-        if col_btn.button("Remove", key=f"remove_{tag}"):
-            updated = [t for t in current_tags if t != tag]
-            if save_tracked_tags(updated, modified_by="admin"):
-                st.success(f"Removed **{tag}**")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error("Failed to save — check Spaces credentials.")
-else:
-    st.info("No tags configured yet.")
-
-st.markdown("---")
-
-st.markdown("### Add a Tag")
-
-col_input, col_add = st.columns([4, 1])
-new_tag = col_input.text_input(
-    "Tag name",
-    placeholder = "e.g. Universal Parks",
-    label_visibility = "collapsed",
-)
-if col_add.button("Add", type="primary"):
-    new_tag = new_tag.strip()
-    if not new_tag:
-        st.warning("Please enter a tag name.")
-    elif new_tag in current_tags:
-        st.warning(f"**{new_tag}** is already in the list.")
-    else:
-        updated = current_tags + [new_tag]
-        if save_tracked_tags(updated, modified_by="admin"):
-            st.success(f"Added **{new_tag}**")
-            st.cache_data.clear()
-            st.rerun()
-        else:
-            st.error("Failed to save — check Spaces credentials.")
-
-st.markdown("---")
-
-st.markdown("### Bulk Upload via CSV")
-st.caption(
-    "Upload a CSV with a column named **tag** (one tag per row). "
-    "Tags will be **merged** with the existing list — nothing is removed."
-)
-
-uploaded = st.file_uploader("Upload CSV", type=["csv"])
-if uploaded:
-    try:
-        df = pd.read_csv(uploaded)
-        col = next(
-            (c for c in df.columns if c.strip().lower() in ("tag", "tags")),
-            None
-        )
-        if col is None:
-            st.error("CSV must have a column named 'tag' or 'tags'.")
-        else:
-            new_tags    = [str(t).strip() for t in df[col].dropna() if str(t).strip()]
-            merged      = sorted(set(current_tags) | set(new_tags))
-            added_count = len(merged) - len(current_tags)
-
-            st.markdown(f"**Preview:** {len(new_tags)} tags in file, "
-                        f"**{added_count} new** tags will be added.")
-            st.dataframe(
-                pd.DataFrame({"Tag": new_tags}),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            if st.button("✅ Confirm Import", type="primary"):
-                if save_tracked_tags(merged, modified_by="admin (csv import)"):
-                    st.success(f"Imported — {added_count} new tags added. "
-                               f"Total: {len(merged)} tags.")
-                    st.cache_data.clear()
-                    st.rerun()
+            with col_info:
+                if info.get("is_admin"):
+                    st.caption("Admin user — has access to all customers")
                 else:
-                    st.error("Failed to save — check Spaces credentials.")
-    except Exception as e:
-        st.error(f"Could not read CSV: {e}")
+                    assigned = info.get("customers") or []
+                    st.caption(
+                        f"Assigned customers: **{', '.join(assigned)}**"
+                        if assigned else "No customers assigned"
+                    )
+
+            with col_delete:
+                if username != st.session_state.get("username"):
+                    if st.button("Remove", key=f"remove_{username}", type="secondary"):
+                        del users[username]
+                        save_users(users)
+                        st.success(f"Removed user **{username}**")
+                        st.rerun()
+                else:
+                    st.caption("(you)")
+
+            if not info.get("is_admin"):
+                new_customers = st.multiselect(
+                    "Update customer access",
+                    options  = all_customers,
+                    default  = [c for c in (info.get("customers") or []) if c in all_customers],
+                    key      = f"customers_{username}",
+                )
+                new_password = st.text_input(
+                    "New password (leave blank to keep current)",
+                    type = "password",
+                    key  = f"password_{username}",
+                )
+                if st.button("Save Changes", key=f"save_{username}", type="primary"):
+                    users[username]["customers"] = new_customers
+                    if new_password.strip():
+                        users[username]["password"] = new_password.strip()
+                    save_users(users)
+                    st.success(f"Updated **{username}**")
+                    st.rerun()
+else:
+    st.info("No users found.")
 
 st.markdown("---")
 
-with st.expander("⚠️ Danger Zone"):
-    st.warning("This will remove ALL tracked tags. The next nightly pull will return no results.")
-    if st.button("🗑️ Clear All Tags", type="secondary"):
-        if save_tracked_tags([], modified_by="admin"):
-            st.success("All tags cleared.")
-            st.cache_data.clear()
-            st.rerun()
-        else:
-            st.error("Failed to save.")
+# ── Add new user ──────────────────────────────────────────────────────────────
+st.markdown("### Add New User")
+
+col1, col2 = st.columns(2)
+with col1:
+    new_username = st.text_input("Username", placeholder="e.g. universalparks")
+with col2:
+    new_password = st.text_input("Password", type="password", placeholder="Set a password")
+
+new_is_admin = st.checkbox("Admin user (access to everything)")
+
+if not new_is_admin:
+    new_customers = st.multiselect(
+        "Assign customers",
+        options = all_customers,
+        help    = "Select which 3PL customers this user can see",
+    )
+else:
+    new_customers = None
+
+if st.button("➕ Add User", type="primary"):
+    if not new_username.strip():
+        st.warning("Please enter a username.")
+    elif not new_password.strip():
+        st.warning("Please enter a password.")
+    elif new_username.strip().lower() in users:
+        st.warning(f"Username **{new_username}** already exists.")
+    elif not new_is_admin and not new_customers:
+        st.warning("Please assign at least one customer.")
+    else:
+        users[new_username.strip().lower()] = {
+            "password":  new_password.strip(),
+            "customers": new_customers,
+            "is_admin":  new_is_admin,
+        }
+        save_users(users)
+        st.success(f"Added user **{new_username.strip().lower()}**")
+        st.rerun()
