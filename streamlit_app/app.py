@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -52,6 +52,20 @@ if "user" not in st.session_state:
     st.session_state.user = None
 if "report_data" not in st.session_state:
     st.session_state.report_data = None
+if "last_activity" not in st.session_state:
+    st.session_state.last_activity = datetime.utcnow()
+
+# Auto-logout after 30 minutes of inactivity
+if st.session_state.authenticated:
+    inactive_minutes = (datetime.utcnow() - st.session_state.last_activity).total_seconds() / 60
+    if inactive_minutes > 30:
+        st.session_state.authenticated = False
+        st.session_state.user          = None
+        st.session_state.report_data   = None
+        st.query_params.clear()
+        st.rerun()
+    else:
+        st.session_state.last_activity = datetime.utcnow()
 
 # ── Login screen ──────────────────────────────────────────────────────────────
 if not st.session_state.authenticated:
@@ -98,6 +112,7 @@ if not st.session_state.authenticated:
 
         username = st.text_input("Email Address", autocomplete="email")
         password = st.text_input("Password", type="password", autocomplete="current-password")
+        st.caption("💡 Using a saved password? Press **Tab** after autofill, then click Log In.")
 
         if st.button("Log In", type="primary", use_container_width=True):
             user = authenticate(username, password)
