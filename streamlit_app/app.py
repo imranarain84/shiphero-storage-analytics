@@ -7,9 +7,8 @@ import datetime as dt
 sys.path.insert(0, os.path.dirname(__file__))
 
 from logic.spaces     import (
-    list_available_dates, load_snapshot,
+    list_available_dates, load_snapshot, load_date_range,
     authenticate, get_all_customers,
-    get_date_range_summary,
 )
 from logic.calculator import calculate_costs
 from logic.auth       import make_token, verify_token
@@ -313,27 +312,43 @@ if generate:
         snapshot_date  = str(end_date)
 
     else:
-        # Fast — load pre-computed history
-        with st.spinner("Loading date range summary..."):
-            summary = get_date_range_summary(
-                str(start_date),
-                str(end_date),
-                list(cust_set),
-                selected_warehouses,
-            )
+        # Load all snapshots in range with progress bar
+        snapshots = load_date_range(str(start_date), str(end_date))
 
-        if not summary["entries"] or summary["total_cost"] == 0:
-            st.warning("No data found for the selected date range and filters.")
+        if not snapshots:
+            st.warning("No data found for the selected date range.")
             st.stop()
 
-        days_with_data = summary["days"]
-        total_cost     = summary["total_cost"]
+        all_daily_dfs  = []
+        for snap_date, snap_rows in sorted(snapshots.items()):
+            day_rows = [r for r in snap_rows if r.get("customer") in cust_set]
+            if selected_warehouses:
+                day_rows = [
+                    r for r in day_rows
+                    if any(wh.lower() in (r.get("warehouse") or "").lower() for wh in wh_set)
+                ]
+            if tag_set:
+                day_rows = [
+                    r for r in day_rows
+                    if tag_set.intersection(set(r.get("tags") or []))
+                ]
+            if day_rows:
+                day_df = calculate_costs(day_rows, 1)
+                day_df["Snapshot Date"] = snap_date
+                all_daily_dfs.append(day_df)
+
+        if not all_daily_dfs:
+            st.warning("No inventory rows match the selected filters.")
+            st.stop()
+
+        days_with_data = len(all_daily_dfs)
+        df             = pd.concat(all_daily_dfs, ignore_index=True)
+        total_cost     = df["Total Cost"].sum()
         avg_daily      = total_cost / days_with_data if days_with_data > 0 else 0
-        total_locs     = summary["total_locs"]
-        total_skus     = summary["total_skus"]
+        total_locs     = df[df["Location"] != "No Active Bin"]["Location"].nunique()
+        total_skus     = df["SKU"].nunique()
         snapshot_date  = str(end_date)
         filtered_rows  = []
-        df             = pd.DataFrame()
 
     st.session_state.report_data = {
         "df":            df,
@@ -347,7 +362,7 @@ if generate:
         "start_date":    start_date,
         "end_date":      end_date,
         "date_mode":     date_mode,
-        "summary":       summary if date_mode != "Today" else None,
+        "summary":       None,
     }
 
 # ── Display report ────────────────────────────────────────────────────────────
@@ -396,16 +411,26 @@ if st.session_state.report_data:
         loc_summary["Total Cost"] = loc_summary["Total Cost"].apply(lambda x: f"${x:,.2f}")
         st.dataframe(loc_summary, use_container_width=True, hide_index=True)
 
-    elif summary:
-        loc_df = pd.DataFrame([{
-            "Location Type":      e.get("storage_type", ""),
-            "Occupied Locations": e.get("location_count", 0),
-            "Unique SKUs":        e.get("sku_count", 0),
-            "Total Cost":         f"${e.get('total_cost', 0):,.2f}",
-        } for e in summary["entries"] if e.get("total_cost", 0) > 0])
-
-        if not loc_df.empty:
-            st.dataframe(loc_df, use_container_width=True, hide_index=True)
+    elif not df.empty:
+        loc_summary = (
+            df[df["Location"] != "No Active Bin"]
+            .groupby("Storage Type")
+            .agg(
+                Occupied_Locations = ("Location", "nunique"),
+                Unique_SKUs        = ("SKU", "nunique"),
+                Total_Cost         = ("Total Cost", "sum"),
+            )
+            .reset_index()
+            .sort_values("Total_Cost", ascending=False)
+            .rename(columns={
+                "Storage Type":       "Location Type",
+                "Occupied_Locations": "Occupied Locations",
+                "Unique_SKUs":        "Unique SKUs",
+                "Total_Cost":         "Total Cost",
+            })
+        )
+        loc_summary["Total Cost"] = loc_summary["Total Cost"].apply(lambda x: f"${x:,.2f}")
+        st.dataframe(loc_summary, use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
@@ -436,8 +461,36 @@ if st.session_state.report_data:
             file_name = f"storage_report_{start_date}_to_{end_date}.csv",
             mime      = "text/csv",
         )
-    else:
-        st.info("💡 Product Detail and CSV download are available in Today view. Date range shows aggregated cost summaries.")
+    elif not df.empty:
+        st.markdown("### Product Detail")
+        search = st.text_input(
+            "Search By SKU Or Product Name",
+            placeholder = "e.g. UNI-1234 or plush",
+            key         = "search_range",
+        )
+        display_df = df.copy()
+        if "Snapshot Date" in display_df.columns:
+            display_df = display_df.drop(columns=["Snapshot Date"])
+        display_df["Daily Rate"] = display_df["Daily Rate"].apply(lambda x: f"${x:.4f}")
+        display_df["Total Cost"] = display_df["Total Cost"].apply(lambda x: f"${x:,.2f}")
+
+        if search.strip():
+            mask = (
+                display_df["SKU"].str.contains(search.strip(), case=False, na=False) |
+                display_df["Product Name"].str.contains(search.strip(), case=False, na=False)
+            )
+            display_df = display_df[mask]
+            st.caption(f"{len(display_df):,} results for '{search.strip()}'")
+
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        csv = df.drop(columns=["Snapshot Date"], errors="ignore").to_csv(index=False)
+        st.download_button(
+            label     = "📥 Download CSV",
+            data      = csv,
+            file_name = f"storage_report_{start_date}_to_{end_date}.csv",
+            mime      = "text/csv",
+        )
 
     st.markdown("---")
     st.markdown(
