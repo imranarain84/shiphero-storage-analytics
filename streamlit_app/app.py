@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
+import datetime as dt
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -53,11 +54,11 @@ if "user" not in st.session_state:
 if "report_data" not in st.session_state:
     st.session_state.report_data = None
 if "last_activity" not in st.session_state:
-    st.session_state.last_activity = datetime.utcnow()
+    st.session_state.last_activity = dt.datetime.now(dt.timezone.utc)
 
 # Auto-logout after 30 minutes of inactivity
 if st.session_state.authenticated:
-    inactive_minutes = (datetime.utcnow() - st.session_state.last_activity).total_seconds() / 60
+    inactive_minutes = (dt.datetime.now(dt.timezone.utc) - st.session_state.last_activity).total_seconds() / 60
     if inactive_minutes > 30:
         st.session_state.authenticated = False
         st.session_state.user          = None
@@ -65,7 +66,7 @@ if st.session_state.authenticated:
         st.query_params.clear()
         st.rerun()
     else:
-        st.session_state.last_activity = datetime.utcnow()
+        st.session_state.last_activity = dt.datetime.now(dt.timezone.utc)
 
 # ── Login screen ──────────────────────────────────────────────────────────────
 if not st.session_state.authenticated:
