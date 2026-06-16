@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from logic.spaces     import (
     list_available_dates, load_snapshot, load_date_range,
     authenticate, get_all_customers,
+    get_date_range_summary,
 )
 from logic.calculator import calculate_costs
 from logic.auth       import make_token, verify_token
