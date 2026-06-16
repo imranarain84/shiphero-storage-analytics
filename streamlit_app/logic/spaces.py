@@ -90,14 +90,11 @@ def load_date_range(start: str, end: str) -> dict[str, list[dict]]:
         return {}
 
     result   = {}
-    progress = st.progress(0, text="Loading snapshots...")
+    progress = st.progress(0)
     total    = len(dates_to_load)
 
     for i, d in enumerate(dates_to_load):
-        progress.progress(
-            (i + 1) / total,
-            text=f"Loading snapshot {i+1} of {total} ({d})..."
-        )
+        progress.progress((i + 1) / total)
         rows = load_snapshot(d)
         if rows:
             result[d] = rows
