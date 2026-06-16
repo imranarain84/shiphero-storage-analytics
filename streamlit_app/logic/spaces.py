@@ -4,7 +4,6 @@ import gzip
 import boto3
 import streamlit as st
 from datetime import date, timedelta, datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SPACES_KEY      = os.environ["SPACES_KEY"]
 SPACES_SECRET   = os.environ["SPACES_SECRET"]
@@ -72,8 +71,8 @@ def load_snapshot(snapshot_date: str) -> list[dict]:
 
 def load_date_range(start: str, end: str) -> dict[str, list[dict]]:
     """
-    Load all snapshots between start and end date in parallel.
-    Each snapshot is cached individually so repeated loads are fast.
+    Load snapshots between start and end date.
+    Each snapshot is cached individually so repeated loads are instant.
     """
     available = set(list_available_dates())
     start_d   = date.fromisoformat(start)
@@ -90,19 +89,20 @@ def load_date_range(start: str, end: str) -> dict[str, list[dict]]:
     if not dates_to_load:
         return {}
 
-    # Load in parallel
-    result = {}
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        future_to_date = {
-            executor.submit(load_snapshot, d): d
-            for d in dates_to_load
-        }
-        for future in as_completed(future_to_date):
-            d    = future_to_date[future]
-            rows = future.result()
-            if rows:
-                result[d] = rows
+    result   = {}
+    progress = st.progress(0, text="Loading snapshots...")
+    total    = len(dates_to_load)
 
+    for i, d in enumerate(dates_to_load):
+        progress.progress(
+            (i + 1) / total,
+            text=f"Loading snapshot {i+1} of {total} ({d})..."
+        )
+        rows = load_snapshot(d)
+        if rows:
+            result[d] = rows
+
+    progress.empty()
     return result
 
 
