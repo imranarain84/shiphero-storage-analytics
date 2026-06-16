@@ -2,7 +2,9 @@ import os
 import json
 import gzip
 import boto3
+import streamlit as st
 from datetime import date, timedelta, datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SPACES_KEY      = os.environ["SPACES_KEY"]
 SPACES_SECRET   = os.environ["SPACES_SECRET"]
@@ -21,10 +23,27 @@ def _client():
     )
 
 
+def _s3_get(key: str) -> dict:
+    try:
+        obj = _client().get_object(Bucket=SPACES_BUCKET, Key=key)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return {}
+
+
+def _s3_put(key: str, data: dict):
+    _client().put_object(
+        Bucket      = SPACES_BUCKET,
+        Key         = key,
+        Body        = json.dumps(data, indent=2).encode("utf-8"),
+        ContentType = "application/json",
+    )
+
+
+# ── Snapshot helpers ──────────────────────────────────────────────────────────
 def list_available_dates() -> list[str]:
     try:
-        s3   = _client()
-        resp = s3.list_objects_v2(Bucket=SPACES_BUCKET, Prefix="inventory/")
+        resp  = _client().list_objects_v2(Bucket=SPACES_BUCKET, Prefix="inventory/")
         dates = []
         for obj in resp.get("Contents", []):
             key = obj["Key"]
@@ -36,11 +55,14 @@ def list_available_dates() -> list[str]:
         return []
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_snapshot(snapshot_date: str) -> list[dict]:
-    s3  = _client()
-    key = f"inventory/{snapshot_date}.json.gz"
+    """Load and cache a single day's snapshot. Cached for 1 hour."""
     try:
-        obj      = s3.get_object(Bucket=SPACES_BUCKET, Key=key)
+        obj      = _client().get_object(
+            Bucket = SPACES_BUCKET,
+            Key    = f"inventory/{snapshot_date}.json.gz"
+        )
         gz_bytes = obj["Body"].read()
         payload  = gzip.decompress(gz_bytes)
         return json.loads(payload)
@@ -48,55 +70,68 @@ def load_snapshot(snapshot_date: str) -> list[dict]:
         return []
 
 
-def load_most_recent_snapshot() -> tuple[str, list[dict]]:
-    dates = list_available_dates()
-    if not dates:
-        return ("", [])
-    latest = dates[-1]
-    return (latest, load_snapshot(latest))
-
-
 def load_date_range(start: str, end: str) -> dict[str, list[dict]]:
+    """
+    Load all snapshots between start and end date in parallel.
+    Each snapshot is cached individually so repeated loads are fast.
+    """
     available = set(list_available_dates())
     start_d   = date.fromisoformat(start)
     end_d     = date.fromisoformat(end)
-    result    = {}
-    current   = start_d
+
+    dates_to_load = []
+    current = start_d
     while current <= end_d:
         ds = str(current)
         if ds in available:
-            result[ds] = load_snapshot(ds)
+            dates_to_load.append(ds)
         current += timedelta(days=1)
+
+    if not dates_to_load:
+        return {}
+
+    # Load in parallel
+    result = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_date = {
+            executor.submit(load_snapshot, d): d
+            for d in dates_to_load
+        }
+        for future in as_completed(future_to_date):
+            d    = future_to_date[future]
+            rows = future.result()
+            if rows:
+                result[d] = rows
+
     return result
 
 
-TAGS_KEY = "config/tracked_tags.json"
+# ── User management ───────────────────────────────────────────────────────────
+USERS_KEY = "config/users.json"
 
 
-def load_tracked_tags() -> dict:
-    try:
-        s3   = _client()
-        obj  = s3.get_object(Bucket=SPACES_BUCKET, Key=TAGS_KEY)
-        return json.loads(obj["Body"].read())
-    except Exception:
-        return {"tags": [], "last_modified": None, "last_modified_by": None}
+def load_users() -> dict:
+    data = _s3_get(USERS_KEY)
+    return data.get("users", {})
 
 
-def save_tracked_tags(tags: list[str], modified_by: str = "admin") -> bool:
-    try:
-        s3      = _client()
-        payload = json.dumps({
-            "tags":             sorted(tags),
-            "last_modified":    datetime.utcnow().isoformat(),
-            "last_modified_by": modified_by,
-        }, indent=2).encode("utf-8")
-        s3.put_object(
-            Bucket      = SPACES_BUCKET,
-            Key         = TAGS_KEY,
-            Body        = payload,
-            ContentType = "application/json",
-        )
-        return True
-    except Exception as e:
-        print(f"Error saving tracked tags: {e}")
-        return False
+def save_users(users: dict):
+    _s3_put(USERS_KEY, {
+        "users":        users,
+        "last_updated": datetime.utcnow().isoformat(),
+    })
+
+
+def authenticate(username: str, password: str) -> dict | None:
+    users = load_users()
+    user  = users.get(username.strip().lower())
+    if not user:
+        return None
+    if user.get("password") != password:
+        return None
+    return user
+
+
+def get_all_customers(snapshot_date: str) -> list[str]:
+    rows = load_snapshot(snapshot_date)
+    return sorted(set(r.get("customer", "") for r in rows if r.get("customer")))
