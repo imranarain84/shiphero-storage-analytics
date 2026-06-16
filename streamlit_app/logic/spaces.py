@@ -69,10 +69,24 @@ def load_snapshot(snapshot_date: str) -> list[dict]:
         return []
 
 
+def _download_snapshot_direct(snapshot_date: str) -> list[dict]:
+    """Download a snapshot directly without Streamlit cache decorator."""
+    try:
+        obj      = _client().get_object(
+            Bucket = SPACES_BUCKET,
+            Key    = f"inventory/{snapshot_date}.json.gz"
+        )
+        gz_bytes = obj["Body"].read()
+        payload  = gzip.decompress(gz_bytes)
+        return json.loads(payload)
+    except Exception:
+        return []
+
+
 def load_date_range(start: str, end: str) -> dict[str, list[dict]]:
     """
-    Load snapshots between start and end date.
-    Each snapshot is cached individually so repeated loads are instant.
+    Load snapshots between start and end date with progress bar.
+    Downloads directly to avoid Streamlit cache decorator conflicts.
     """
     available = set(list_available_dates())
     start_d   = date.fromisoformat(start)
@@ -95,7 +109,7 @@ def load_date_range(start: str, end: str) -> dict[str, list[dict]]:
 
     for i, d in enumerate(dates_to_load):
         progress.progress((i + 1) / total)
-        rows = load_snapshot(d)
+        rows = _download_snapshot_direct(d)
         if rows:
             result[d] = rows
 
