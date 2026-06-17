@@ -56,7 +56,7 @@ def list_available_dates() -> list[str]:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_snapshot(snapshot_date: str) -> list[dict]:
-    """Load and cache a single day's snapshot. Cached for 1 hour."""
+    """Load and cache a single day's snapshot. Handles both slim and full formats."""
     try:
         obj      = _client().get_object(
             Bucket = SPACES_BUCKET,
@@ -64,7 +64,25 @@ def load_snapshot(snapshot_date: str) -> list[dict]:
         )
         gz_bytes = obj["Body"].read()
         payload  = gzip.decompress(gz_bytes)
-        return json.loads(payload)
+        rows     = json.loads(payload)
+
+        # Normalize slim format (single letter keys) to full format
+        if rows and "s" in rows[0]:
+            normalized = []
+            for r in rows:
+                tags_raw = r.get("t", "")
+                normalized.append({
+                    "sku":           r.get("s", ""),
+                    "product_name":  r.get("n", ""),
+                    "customer":      r.get("c", ""),
+                    "tags":          [t for t in tags_raw.split("|") if t] if tags_raw else [],
+                    "location_name": r.get("l", "No Active Bin"),
+                    "storage_type":  r.get("st", "No Active Bin"),
+                    "warehouse":     r.get("w", ""),
+                    "quantity":      r.get("q", 0),
+                })
+            return normalized
+        return rows
     except Exception:
         return []
 
@@ -145,7 +163,12 @@ def authenticate(username: str, password: str) -> dict | None:
 
 def get_all_customers(snapshot_date: str) -> list[str]:
     rows = load_snapshot(snapshot_date)
-    return sorted(set(r.get("customer", "") for r in rows if r.get("customer")))
+    customers = set()
+    for r in rows:
+        c = r.get("customer") or r.get("c", "")
+        if c:
+            customers.add(c)
+    return sorted(customers)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
