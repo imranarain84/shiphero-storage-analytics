@@ -148,6 +148,57 @@ def get_all_customers(snapshot_date: str) -> list[str]:
     return sorted(set(r.get("customer", "") for r in rows if r.get("customer")))
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_billing_range(start: str, end: str, customer: str) -> list[dict]:
+    """
+    Load pre-computed billing data for a customer across a date range.
+    Loads one small file per month instead of 30 large daily snapshots.
+    """
+    from datetime import date as _date
+    start_d    = _date.fromisoformat(start)
+    end_d      = _date.fromisoformat(end)
+    start_ym   = start_d.strftime("%Y-%m")
+    end_ym     = end_d.strftime("%Y-%m")
+    cust_key   = customer.replace(" ", "_")
+
+    # Determine which months to load
+    months = []
+    current = start_d.replace(day=1)
+    while current.strftime("%Y-%m") <= end_ym:
+        months.append(current.strftime("%Y-%m"))
+        if current.month == 12:
+            current = current.replace(year=current.year+1, month=1)
+        else:
+            current = current.replace(month=current.month+1)
+
+    all_rows = []
+    for ym in months:
+        key = f"billing/{cust_key}_{ym}.json"
+        try:
+            obj      = _client().get_object(Bucket=SPACES_BUCKET, Key=key)
+            gz_bytes = obj["Body"].read()
+            payload  = gzip.decompress(gz_bytes)
+            rows     = json.loads(payload)
+
+            # Filter to only dates within the selected range
+            filtered = []
+            for row in rows:
+                row_dates = row.get("dates", [])
+                # Keep rows that have at least one date in range
+                in_range = [d for d in row_dates if start <= d <= end]
+                if in_range:
+                    # Recalculate cost for just the days in range
+                    row_copy = dict(row)
+                    row_copy["days_in_period"] = len(in_range)
+                    row_copy["total_cost"]     = round(row.get("daily_rate", 0) * len(in_range), 4)
+                    filtered.append(row_copy)
+            all_rows.extend(filtered)
+        except Exception:
+            pass
+
+    return all_rows
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_cost_history() -> dict:
     """Load the pre-computed cost history file. Tiny and fast."""

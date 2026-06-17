@@ -213,6 +213,120 @@ def send_summary_email(snapshot_date: str, row_count: int, size_kb: float, custo
     print(f"Summary email sent to {', '.join(NOTIFY_EMAILS)}")
 
 
+def update_billing_files(rows: list[dict], snapshot_date: str):
+    """Update monthly billing files with today's data."""
+    import gzip as _gzip
+    year_month = snapshot_date[:7]
+
+    RATES = {
+        "pallet": 2.093, "standard bin": 0.0442, "bin": 0.0442,
+        "half pallet": 1.0472, "tractor trailer load floor storage": 52.00,
+        "blue bin large": 0.2925, "blue bin medium": 0.1462, "blue bin small": 0.0488,
+        "gray bin small": 0.1846, "gray bin medium": 0.2275, "gray bin large": 0.325,
+        "pallet tall": 2.7274, "pallet large": 2.652, "pallet medium large": 1.7914,
+        "pallet medium small": 1.443, "pallet medium": 1.59, "pallet small large": 0.9581,
+        "pallet small": 0.5902, "wall - back": 12.116, "wall - front": 4.4096,
+        "pallite - 48": 0.0357, "pallite_16": 0.0537, "pallite_36": 0.0347,
+        "pallite_48": 0.0357, "palite_48": 0.0357, "dt - pallet": 2.2074,
+        "dt-pallet": 2.2074, "hd": 2.275, "jumbo receiving pallet": 3.90,
+        "climate controlled storage room": 1.54, "secure storage room": 32.77,
+    }
+
+    def get_rate(st):
+        return RATES.get((st or "").strip().lower(), 0.0)
+
+    def is_recv(loc):
+        return "receiv" in (loc or "").strip().lower()
+
+    # Group by customer
+    from collections import defaultdict
+    by_customer = defaultdict(list)
+    for row in rows:
+        c = row.get("customer", "")
+        if c:
+            by_customer[c].append(row)
+
+    s3 = _s3()
+
+    for customer, cust_rows in by_customer.items():
+        cust_key = customer.replace(" ", "_")
+        key      = f"billing/{cust_key}_{year_month}.json"
+
+        # Load existing billing file if it exists
+        try:
+            obj      = s3.get_object(Bucket=SPACES_BUCKET, Key=key)
+            existing = json.loads(_gzip.decompress(obj["Body"].read()))
+            billing  = {f"{r['sku']}||{r['location']}": r for r in existing}
+        except Exception:
+            billing = {}
+
+        # Calculate location totals
+        loc_totals = {}
+        for row in cust_rows:
+            loc = row.get("location_name") or "No Active Bin"
+            qty = row.get("quantity") or 0
+            loc_totals[loc] = loc_totals.get(loc, 0) + qty
+
+        # Update billing with today's data
+        for row in cust_rows:
+            sku       = row.get("sku", "")
+            loc       = row.get("location_name") or "No Active Bin"
+            stor_type = row.get("storage_type") or "No Active Bin"
+            warehouse = row.get("warehouse", "")
+            qty       = row.get("quantity") or 0
+            tags      = "|".join(row.get("tags") or [])
+            loc_total = loc_totals.get(loc, 0)
+
+            if not sku:
+                continue
+
+            if loc == "No Active Bin" or is_recv(loc):
+                cost = 0.0
+                rate = 0.0
+            else:
+                rate       = get_rate(stor_type)
+                proportion = (qty / loc_total) if loc_total > 0 else 1.0
+                cost       = round(rate * proportion, 4)
+
+            bkey     = f"{sku}||{loc}"
+            existing = billing.get(bkey)
+
+            if existing:
+                if snapshot_date not in existing.get("dates", []):
+                    existing["days_in_period"] += 1
+                    existing["total_cost"]      = round(existing["total_cost"] + cost, 4)
+                    existing["dates"].append(snapshot_date)
+                    existing["quantity"]        = qty
+            else:
+                billing[bkey] = {
+                    "sku":            sku,
+                    "product_name":   row.get("product_name", ""),
+                    "customer":       customer,
+                    "tags":           tags,
+                    "location":       loc,
+                    "storage_type":   stor_type,
+                    "warehouse":      warehouse,
+                    "quantity":       qty,
+                    "daily_rate":     rate,
+                    "days_in_period": 1,
+                    "total_cost":     cost,
+                    "dates":          [snapshot_date],
+                }
+
+        rows_list = list(billing.values())
+        payload   = json.dumps(rows_list, separators=(",", ":")).encode("utf-8")
+        gz_bytes  = _gzip.compress(payload, compresslevel=9)
+        s3.put_object(
+            Bucket          = SPACES_BUCKET,
+            Key             = key,
+            Body            = gz_bytes,
+            ContentType     = "application/json",
+            ContentEncoding = "gzip",
+        )
+
+    print(f"Updated billing files for {len(by_customer)} customers for {snapshot_date}")
+
+
 def main(args: dict = {}) -> dict:
     today = str(date.today())
     print(f"=== Nightly Pull Starting: {today} ===")
@@ -231,6 +345,11 @@ def main(args: dict = {}) -> dict:
         update_cost_history(rows, today)
     except Exception as e:
         print(f"Warning: could not update cost history — {e}")
+
+    try:
+        update_billing_files(rows, today)
+    except Exception as e:
+        print(f"Warning: could not update billing files — {e}")
 
     try:
         send_summary_email(today, len(rows), size_kb, customers)

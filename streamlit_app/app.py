@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from logic.spaces     import (
     list_available_dates, load_snapshot, load_date_range,
-    authenticate, get_all_customers,
+    authenticate, get_all_customers, load_billing_range,
 )
 from logic.calculator import calculate_costs
 from logic.auth       import make_token, verify_token
@@ -312,37 +312,51 @@ if generate:
         snapshot_date  = str(end_date)
 
     else:
-        # Load all snapshots in range with progress bar
-        snapshots = load_date_range(str(start_date), str(end_date))
+        # Load pre-computed billing files — fast, one file per customer per month
+        with st.spinner("Loading billing data..."):
+            all_billing_rows = []
+            for customer in selected_customers:
+                rows = load_billing_range(str(start_date), str(end_date), customer)
+                all_billing_rows.extend(rows)
 
-        if not snapshots:
-            st.warning("No data found for the selected date range.")
+        if not all_billing_rows:
+            st.warning("No billing data found for the selected date range.")
             st.stop()
 
-        all_daily_dfs  = []
-        for snap_date, snap_rows in sorted(snapshots.items()):
-            day_rows = [r for r in snap_rows if r.get("customer") in cust_set]
-            if selected_warehouses:
-                day_rows = [
-                    r for r in day_rows
-                    if any(wh.lower() in (r.get("warehouse") or "").lower() for wh in wh_set)
-                ]
-            if tag_set:
-                day_rows = [
-                    r for r in day_rows
-                    if tag_set.intersection(set(r.get("tags") or []))
-                ]
-            if day_rows:
-                day_df = calculate_costs(day_rows, 1)
-                day_df["Snapshot Date"] = snap_date
-                all_daily_dfs.append(day_df)
+        # Apply warehouse filter
+        if selected_warehouses:
+            all_billing_rows = [
+                r for r in all_billing_rows
+                if any(wh.lower() in (r.get("warehouse") or "").lower() for wh in wh_set)
+            ]
 
-        if not all_daily_dfs:
+        # Apply tag filter
+        if tag_set:
+            all_billing_rows = [
+                r for r in all_billing_rows
+                if tag_set.intersection(set((r.get("tags") or "").split("|")))
+            ]
+
+        if not all_billing_rows:
             st.warning("No inventory rows match the selected filters.")
             st.stop()
 
-        days_with_data = len(all_daily_dfs)
-        df             = pd.concat(all_daily_dfs, ignore_index=True)
+        # Build display dataframe from billing rows
+        df = pd.DataFrame([{
+            "SKU":          r.get("sku", ""),
+            "Product Name": r.get("product_name", ""),
+            "Customer":     r.get("customer", ""),
+            "Tags":         r.get("tags", ""),
+            "Location":     r.get("location", "No Active Bin"),
+            "Storage Type": r.get("storage_type", ""),
+            "Warehouse":    r.get("warehouse", ""),
+            "Quantity":     r.get("quantity", 0),
+            "Daily Rate":   r.get("daily_rate", 0),
+            "Days":         r.get("days_in_period", 0),
+            "Total Cost":   r.get("total_cost", 0),
+        } for r in all_billing_rows])
+
+        days_with_data = int(df["Days"].max()) if not df.empty else 1
         total_cost     = df["Total Cost"].sum()
         avg_daily      = total_cost / days_with_data if days_with_data > 0 else 0
         total_locs     = df[df["Location"] != "No Active Bin"]["Location"].nunique()
